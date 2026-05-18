@@ -1,0 +1,290 @@
+# -*- Mode: python; py-indent-offset: 4; indent-tabs-mode: nil; coding: utf-8; -*-
+#
+# wscript — NS-3.43 UAV Secure FANET Build Script
+# Project: Hierarchical CRT-GCRT Based UAV Swarm Multicast Key Management
+# Target:  Ubuntu 24.04 | GCC 13.3.0 | NS-3.43
+#
+# INTEGRATION NOTE:
+#   This wscript is placed inside the NS-3.43 scratch directory module.
+#   NS-3.43 uses waf as its primary build system. Scratch modules with
+#   subdirectories require a wscript to declare sources explicitly.
+#   Place this file at:
+#       <ns3-root>/scratch/uav-secure-fanet/wscript
+#
+# DEPENDENCY:
+#   NS-3.43 top-level waf must be invoked from <ns3-root>/
+#   This wscript is auto-discovered by NS-3's scratch scanner.
+
+import os
+import subprocess
+
+# ---------------------------------------------------------------------------
+# Module metadata
+# ---------------------------------------------------------------------------
+MODULE_NAME    = "uav-secure-fanet"
+MODULE_VERSION = "1.0.0"
+
+# ---------------------------------------------------------------------------
+# External library detection helpers
+# ---------------------------------------------------------------------------
+
+def _check_pkg(conf, pkg, mandatory=True, uselib_store=None):
+    """Wrapper around pkg-config check with friendly error."""
+    store = uselib_store or pkg.upper().replace("-", "_")
+    conf.check_cfg(
+        package    = pkg,
+        uselib_store = store,
+        args       = ["--cflags", "--libs"],
+        mandatory  = mandatory,
+    )
+
+
+def _check_header(conf, header, mandatory=True):
+    conf.check(header_name=header, mandatory=mandatory, features="c cxx")
+
+
+# ---------------------------------------------------------------------------
+# options() — expose CLI flags to waf configure
+# ---------------------------------------------------------------------------
+
+def options(opt):
+    opt.load("compiler_cxx")
+    grp = opt.add_option_group("UAV Secure FANET Options")
+    grp.add_option(
+        "--with-openssl",
+        default = None,
+        dest    = "openssl_prefix",
+        help    = "Prefix path to OpenSSL installation (e.g. /usr/local)",
+    )
+    grp.add_option(
+        "--with-boost",
+        default = None,
+        dest    = "boost_prefix",
+        help    = "Prefix path to Boost installation",
+    )
+    grp.add_option(
+        "--with-nlohmann",
+        default = "/usr/include",
+        dest    = "nlohmann_prefix",
+        help    = "Path containing nlohmann/json.hpp",
+    )
+    grp.add_option(
+        "--enable-debug-build",
+        action  = "store_true",
+        default = False,
+        dest    = "debug_build",
+        help    = "Enable -g3 -O0 debug build (default: release)",
+    )
+    grp.add_option(
+        "--enable-asan",
+        action  = "store_true",
+        default = False,
+        dest    = "enable_asan",
+        help    = "Enable AddressSanitizer",
+    )
+
+
+# ---------------------------------------------------------------------------
+# configure() — detect dependencies, set flags
+# ---------------------------------------------------------------------------
+
+def configure(conf):
+    conf.load("compiler_cxx")
+
+    # -----------------------------------------------------------------------
+    # C++ standard
+    # -----------------------------------------------------------------------
+    conf.env.CXXFLAGS += ["-std=c++17"]
+
+    # -----------------------------------------------------------------------
+    # Build type flags
+    # -----------------------------------------------------------------------
+    opt = conf.options
+    if getattr(opt, "debug_build", False):
+        conf.env.CXXFLAGS += ["-g3", "-O0", "-DDEBUG_BUILD"]
+        conf.msg("Build type", "DEBUG")
+    else:
+        conf.env.CXXFLAGS += ["-O2", "-DNDEBUG"]
+        conf.msg("Build type", "RELEASE")
+
+    if getattr(opt, "enable_asan", False):
+        conf.env.CXXFLAGS  += ["-fsanitize=address", "-fno-omit-frame-pointer"]
+        conf.env.LINKFLAGS += ["-fsanitize=address"]
+        conf.msg("AddressSanitizer", "ENABLED")
+
+    # -----------------------------------------------------------------------
+    # Warning flags
+    # -----------------------------------------------------------------------
+    conf.env.CXXFLAGS += [
+        "-Wall",
+        "-Wextra",
+        "-Wno-unused-parameter",
+        "-Wno-unused-variable",
+    ]
+
+    # -----------------------------------------------------------------------
+    # OpenSSL detection
+    # -----------------------------------------------------------------------
+    openssl_prefix = getattr(opt, "openssl_prefix", None)
+    if openssl_prefix:
+        conf.env.INCLUDES_OPENSSL = [os.path.join(openssl_prefix, "include")]
+        conf.env.LIBPATH_OPENSSL  = [os.path.join(openssl_prefix, "lib")]
+        conf.env.LIB_OPENSSL      = ["ssl", "crypto"]
+        conf.msg("OpenSSL prefix", openssl_prefix)
+    else:
+        try:
+            _check_pkg(conf, "openssl", mandatory=True,
+                       uselib_store="OPENSSL")
+        except Exception:
+            # Fallback: direct header + lib search
+            _check_header(conf, "openssl/evp.h", mandatory=True)
+            conf.check(lib="ssl",    uselib_store="OPENSSL", mandatory=True)
+            conf.check(lib="crypto", uselib_store="OPENSSL", mandatory=True)
+
+    conf.msg("OpenSSL", "FOUND")
+
+    # -----------------------------------------------------------------------
+    # Boost detection (multiprecision — header-only)
+    # -----------------------------------------------------------------------
+    boost_prefix = getattr(opt, "boost_prefix", None)
+    if boost_prefix:
+        conf.env.INCLUDES_BOOST = [os.path.join(boost_prefix, "include")]
+        conf.msg("Boost prefix", boost_prefix)
+    else:
+        # Multiprecision is header-only; just verify the header exists
+        _check_header(conf, "boost/multiprecision/cpp_int.hpp", mandatory=True)
+
+    conf.msg("Boost.Multiprecision", "FOUND (header-only)")
+
+    # -----------------------------------------------------------------------
+    # nlohmann/json detection (header-only)
+    # -----------------------------------------------------------------------
+    nlohmann_prefix = getattr(opt, "nlohmann_prefix", "/usr/include")
+    conf.env.INCLUDES_NLOHMANN = [nlohmann_prefix]
+    _check_header(conf, "nlohmann/json.hpp", mandatory=True)
+    conf.msg("nlohmann/json", "FOUND (header-only)")
+
+    # -----------------------------------------------------------------------
+    # pthread (required by NS-3)
+    # -----------------------------------------------------------------------
+    conf.check(lib="pthread", uselib_store="PTHREAD", mandatory=True)
+    conf.msg("pthread", "FOUND")
+
+    # -----------------------------------------------------------------------
+    # Store project-wide include paths
+    # -----------------------------------------------------------------------
+    # These will be referenced in build() via use=[...] or includes=[...]
+    conf.env.UAV_PROJECT_ROOT = conf.path.abspath()
+    conf.env.UAV_INCLUDES = [
+        conf.path.abspath(),                          # project root
+        conf.path.find_dir("apps").abspath(),
+        conf.path.find_dir("crypto").abspath(),
+        conf.path.find_dir("headers").abspath(),
+        conf.path.find_dir("mobility").abspath(),
+        conf.path.find_dir("routing").abspath(),
+        conf.path.find_dir("metrics").abspath(),
+        conf.path.find_dir("visualization").abspath(),
+        conf.path.find_dir("utils").abspath(),
+    ]
+
+    conf.msg("Project root", conf.env.UAV_PROJECT_ROOT)
+    conf.msg("Module 2 configuration", "COMPLETE")
+
+
+# ---------------------------------------------------------------------------
+# build() — declare the scratch program
+# ---------------------------------------------------------------------------
+
+def build(bld):
+    # -----------------------------------------------------------------------
+    # Collect sources incrementally.
+    # As future modules add .cc files, they will be picked up automatically
+    # by the glob patterns below. Each subdirectory's sources are listed
+    # explicitly to avoid picking up test files.
+    # -----------------------------------------------------------------------
+
+    # Helper: safely glob a subdir (returns [] if dir has no .cc yet)
+    def _glob(subdir, pattern="**/*.cc"):
+        node = bld.path.find_dir(subdir)
+        if node is None:
+            return []
+        return node.ant_glob(pattern)
+
+    # Source collection — extended by future modules
+    sources = (
+        ["main.cc"]
+        + _glob("apps")
+        + _glob("crypto")
+        + _glob("mobility")
+        + _glob("routing")
+        + _glob("metrics")
+        + _glob("visualization")
+        + _glob("utils")
+        # headers/ is include-only; no .cc files expected there
+    )
+
+    # -----------------------------------------------------------------------
+    # NS-3.43 scratch program declaration
+    # NS-3 waf integration: programs in scratch/ are registered via
+    # bld.register_ns3_script() in NS-3.43's waf helpers.
+    # -----------------------------------------------------------------------
+    program = bld.create_ns3_program(
+        name   = MODULE_NAME,
+        module = "scratch",          # tells NS-3 this is a scratch program
+    )
+
+    program.source     = sources
+    program.includes   = (
+        conf_includes(bld)
+        + bld.env.UAV_INCLUDES
+    )
+    program.use        = _ns3_use_modules() + ["OPENSSL", "PTHREAD"]
+    program.cxxflags   = bld.env.CXXFLAGS
+    program.linkflags  = bld.env.LINKFLAGS
+
+    # Defines visible to all translation units
+    program.defines = [
+        'UAV_PROJECT_VERSION=\\"%s\\"' % MODULE_VERSION,
+        "UAV_LOG_DIR=\\"logs\\"",
+        "UAV_OUTPUT_DIR=\\"output\\"",
+        "UAV_JSON_DIR=\\"json\\"",
+        "UAV_PCAP_DIR=\\"pcap\\"",
+    ]
+
+    bld.msg("UAV Secure FANET program", "REGISTERED")
+
+
+# ---------------------------------------------------------------------------
+# Helper: include paths from configure-time env
+# ---------------------------------------------------------------------------
+
+def conf_includes(bld):
+    paths = []
+    for key in ("INCLUDES_OPENSSL", "INCLUDES_BOOST", "INCLUDES_NLOHMANN"):
+        paths += bld.env.get_flat(key).split() if bld.env.get_flat(key) else []
+    return paths
+
+
+# ---------------------------------------------------------------------------
+# Helper: list of NS-3 modules required by this project
+# Extend this list as future modules add NS-3 library dependencies.
+# ---------------------------------------------------------------------------
+
+def _ns3_use_modules():
+    return [
+        "ns3-core",
+        "ns3-network",
+        "ns3-internet",
+        "ns3-wifi",
+        "ns3-csma",
+        "ns3-mobility",
+        "ns3-olsr",
+        "ns3-applications",
+        "ns3-flow-monitor",
+        "ns3-netanim",
+        "ns3-energy",
+        "ns3-propagation",
+        "ns3-point-to-point",
+        "ns3-traffic-control",
+        "ns3-stats",
+    ]

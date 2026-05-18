@@ -1,0 +1,78 @@
+{
+    "_comment": "Simulation configuration for UAV Secure FANET.",
+    "_schema_version": "1.0",
+
+    "topology": {
+        "num_kdc":           1,
+        "num_skdcs":         3,
+        "num_clusters":      3,
+        "uavs_per_cluster":  6,
+        "num_uavs":          18,
+        "num_jammers":       1,
+        "max_uav_count":     30
+    },
+
+    "simulation": {
+        "duration_s":        180.0,
+        "rng_seed":          10,
+        "runs":              10,
+        "debug":             false,
+        "enable_netanim":    true,
+        "enable_pcap":       true,
+        "enable_flowmonitor":true
+    },
+
+    "area": {
+        "x_min": 0.0,
+        "x_max": 1500.0,
+        "y_min": 0.0,
+        "y_max": 1500.0,
+        "z_min": 50.0,
+        "z_max": 200.0
+    },
+
+    "mobility": {
+        "uav_speed_min":  10.0,
+        "uav_speed_max":  25.0,
+        "uav_alt_min":    50.0,
+        "uav_alt_max":    150.0,
+        "jammer_speed":   10.0
+    },
+
+    "wireless": {
+        "freq_hz":          5000000000.0,
+        "channel_width_mhz":20.0,
+        "tx_power_dbm":     20.0,
+        "phy_rate_mbps":    26.0,
+        "jammer_power_dbm": 30.0,
+        "sinr_threshold_db":8.0
+    },
+
+    "olsr": {
+        "hello_interval_s": 2.0,
+        "tc_interval_s":    5.0
+    },
+
+    "security": {
+        "node_compromise_prob": 0.05,
+        "replay_window_size":   64,
+        "replay_skew_us":       5000000
+    },
+
+    "output": {
+        "log_dir":    "logs",
+        "output_dir": "output",
+        "pcap_dir":   "pcap",
+        "json_dir":   "json",
+        "graphs_dir": "graphs",
+        "csv_interval_s": 1.0,
+        "netanim_interval_ms": 100.0
+    },
+
+    "ports": {
+        "kdc_udp":        9000,
+        "skdc_udp":       9001,
+        "uav_data_udp":   9100,
+        "mtk_multicast":  9200
+    }
+}
