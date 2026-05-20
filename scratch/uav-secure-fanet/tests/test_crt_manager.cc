@@ -1,4 +1,3 @@
-cat > ~/ns-allinone-3.43/ns-3.43/scratch/uav-secure-fanet/tests/test_crt_manager.cc << 'EOF'
 /**
  * tests/test_crt_manager.cc
  * Unit test for Phase 2 Module 12: CRT/GCRT Crypto Manager
@@ -147,7 +146,7 @@ bool test_slave_decrypt() {
             ASSERT_TRUE(sk != nullptr);
 
             bool ok = CrtManager::VerifySlaveDecrypt(
-                *sk, mtoken.MT_K, mtoken.T);
+                *sk, mtoken.MT_K, mtoken.T);  // T = tek_int
 
             if (ok) {
                 ++pass;
@@ -195,6 +194,10 @@ bool test_jo_key_update() {
     mkg.n_total = c0->n_total;
     mkg.slaves  = c0->slave_keys;
 
+    // Set T = tek_int for MTokenGen
+    mtoken0.T       = c0->tek_int;
+    mtoken0.N_group = c0->N_group;
+
     // Simulate leave of UAV index 0
     MTokenResult after_leave = CrtManager::LeKeyUpdate(
         mkg, mtoken0, 0);
@@ -203,14 +206,18 @@ bool test_jo_key_update() {
         after_leave.user_indices.size()),
         initial_users - 1);
 
-    // Verify remaining UAVs (1..5) can decrypt
+    // Verify remaining UAVs (1..5) can decrypt after leave
+    bool leave_ok = true;
     for (utils::u32 u = 1; u < 6; ++u) {
         const auto* sk = mgr.GetClusterSlaveKey(0, u);
-        ASSERT_TRUE(sk != nullptr);
-        bool ok = CrtManager::VerifySlaveDecrypt(
-            *sk, after_leave.MT_K, after_leave.T);
-        ASSERT_TRUE(ok);
+        if (!sk) { leave_ok = false; continue; }
+        // pow(new_MT_K, d_i, n_i) == tek_int % n_i
+        BigInt recovered = BigIntOps::ModPow(
+            after_leave.MT_K, sk->d_i, sk->n_i);
+        BigInt expected  = BigIntOps::Mod(after_leave.T, sk->n_i);
+        if (recovered != expected) { leave_ok = false; }
     }
+    ASSERT_TRUE(leave_ok);
 
     // Now join UAV 0 back
     MTokenResult after_join = CrtManager::JoKeyUpdate(
@@ -221,13 +228,16 @@ bool test_jo_key_update() {
         initial_users);
 
     // Verify ALL UAVs can decrypt after rejoin
+    bool join_ok = true;
     for (utils::u32 u = 0; u < 6; ++u) {
         const auto* sk = mgr.GetClusterSlaveKey(0, u);
-        ASSERT_TRUE(sk != nullptr);
-        bool ok = CrtManager::VerifySlaveDecrypt(
-            *sk, after_join.MT_K, after_join.T);
-        ASSERT_TRUE(ok);
+        if (!sk) { join_ok = false; continue; }
+        BigInt recovered = BigIntOps::ModPow(
+            after_join.MT_K, sk->d_i, sk->n_i);
+        BigInt expected  = BigIntOps::Mod(after_join.T, sk->n_i);
+        if (recovered != expected) { join_ok = false; }
     }
+    ASSERT_TRUE(join_ok);
 
     std::cout << "  Leave UAV 0: remaining 5 verify OK\n";
     std::cout << "  Rejoin UAV 0: all 6 verify OK\n";
@@ -261,6 +271,7 @@ bool test_le_key_update() {
     mkg.slaves  = c1->slave_keys;
 
     auto mtoken1 = mgr.GetMToken(1);
+    mtoken1.N_group = c1->N_group;
 
     // Leave UAV 3 (middle of cluster)
     MTokenResult after_leave = CrtManager::LeKeyUpdate(
@@ -278,8 +289,11 @@ bool test_le_key_update() {
     for (auto u : remaining) {
         const auto* sk = mgr.GetClusterSlaveKey(1, u);
         ASSERT_TRUE(sk != nullptr);
-        bool ok = CrtManager::VerifySlaveDecrypt(
-            *sk, after_leave.MT_K, after_leave.T);
+        // pow(MT_K, d_i, n_i) == tek_int % n_i
+        BigInt recovered = BigIntOps::ModPow(
+            after_leave.MT_K, sk->d_i, sk->n_i);
+        BigInt expected  = BigIntOps::Mod(after_leave.T, sk->n_i);
+        bool ok = (recovered == expected);
         ASSERT_TRUE(ok);
         std::cout << "  Cluster 1 UAV " << u
                   << " after leave: OK\n";
@@ -528,5 +542,3 @@ int main() {
 
     return (g_fail == 0) ? EXIT_SUCCESS : EXIT_FAILURE;
 }
-EOF
-echo "test_crt_manager.cc created"

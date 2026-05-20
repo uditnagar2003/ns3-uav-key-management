@@ -1,4 +1,3 @@
-cat > ~/ns-allinone-3.43/ns-3.43/scratch/uav-secure-fanet/crypto/uav-crt-manager.h << 'EOF'
 /**
  * crypto/uav-crt-manager.h
  *
@@ -60,9 +59,10 @@ struct MKeyGenResult {
 // MTokenResult — output of Algorithm 2/3/5
 // ===========================================================================
 struct MTokenResult {
-    BigInt                      MT_K;
+    BigInt                      MT_K;         // pow(T, e_MK, N_group)
     BigInt                      e_MK;
-    BigInt                      T;
+    BigInt                      T;            // tek_int
+    BigInt                      N_group;      // product of n_i for group
     std::vector<utils::u32>     user_indices;
     utils::u32                  cluster_id;
     utils::u32                  version;      // increments on every rekey
@@ -254,5 +254,4 @@ private:
 } // namespace uav
 
 #endif // UAV_CRT_MANAGER_H
-EOF
-echo "uav-crt-manager.h created"
+

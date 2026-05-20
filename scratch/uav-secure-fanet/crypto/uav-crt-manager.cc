@@ -1,4 +1,3 @@
-cat > ~/ns-allinone-3.43/ns-3.43/scratch/uav-secure-fanet/crypto/uav-crt-manager.cc << 'EOF'
 /**
  * crypto/uav-crt-manager.cc
  */
@@ -50,7 +49,8 @@ void CrtManager::LoadFromParams(const CryptoParamsFile& params) {
         // Populate MTokenResult
         cs.mtoken.MT_K         = cp.MT_K;
         cs.mtoken.e_MK         = cp.e_MK;
-        cs.mtoken.T            = cp.T;
+        cs.mtoken.T            = cp.tek_int;
+        cs.mtoken.N_group      = cp.N_group;
         cs.mtoken.user_indices = std::vector<utils::u32>(
             cp.user_indices.begin(),
             cp.user_indices.end());
@@ -210,9 +210,19 @@ MTokenResult CrtManager::MTokenGen(
         e_MK += mkg.n_total;
     }
 
-    // Step 4: MT_K = e_MK + T
-    result.e_MK = e_MK;
-    result.MT_K = e_MK + T;
+    // Step 4: N_group = product of n_i for group members
+    BigInt N_group = BigInt(1);
+    for (const auto& slave : mkg.slaves) {
+        bool in_group = false;
+        for (auto idx : user_indices)
+            if (slave.uav_index == idx) { in_group = true; break; }
+        if (in_group) N_group *= slave.n_i;
+    }
+
+    // Step 5: MT_K = pow(T, e_MK, N_group)
+    result.e_MK    = e_MK;
+    result.N_group = N_group;
+    result.MT_K    = BigIntOps::ModPow(T, e_MK, N_group);
 
     UAV_LOG_INFO(uav::log::channels::CRYPTO,
         "MTokenGen: cluster=" << cluster_id
@@ -252,8 +262,8 @@ MTokenResult CrtManager::JoKeyUpdate(
     result.cluster_id = current.cluster_id;
     result.version    = current.version + 1;
 
-    // Step 1: e_MK = MT_K - T
-    BigInt e_MK = current.MT_K - current.T;
+    // Step 1: get current e_MK from stored value
+    BigInt e_MK = current.e_MK;
 
     // Step 2: add joining slave's contribution
     e_MK += join_slave->e_i * join_slave->Mi * join_slave->Ni;
@@ -264,13 +274,23 @@ MTokenResult CrtManager::JoKeyUpdate(
         e_MK += mkg.n_total;
     }
 
-    // Step 4: MT'_K = e_MK + T
-    result.e_MK = e_MK;
-    result.MT_K = e_MK + current.T;
-
     // Update user list
     result.user_indices = current.user_indices;
     result.user_indices.push_back(join_slave_index);
+
+    // Recompute N_group with new member
+    BigInt N_group = BigInt(1);
+    for (const auto& slave : mkg.slaves) {
+        bool in_group = false;
+        for (auto idx : result.user_indices)
+            if (slave.uav_index == idx) { in_group = true; break; }
+        if (in_group) N_group *= slave.n_i;
+    }
+
+    // MT'_K = pow(T, e_MK, N_group)
+    result.e_MK    = e_MK;
+    result.N_group = N_group;
+    result.MT_K    = BigIntOps::ModPow(current.T, e_MK, N_group);
 
     UAV_LOG_INFO(uav::log::channels::CRYPTO,
         "JoKeyUpdate: cluster=" << current.cluster_id
@@ -309,8 +329,8 @@ MTokenResult CrtManager::LeKeyUpdate(
     result.cluster_id = current.cluster_id;
     result.version    = current.version + 1;
 
-    // Step 1: e_MK = MT_K - T
-    BigInt e_MK = current.MT_K - current.T;
+    // Step 1: get current e_MK from stored value
+    BigInt e_MK = current.e_MK;
 
     // Step 2: subtract leaving slave's contribution
     e_MK -= leave_slave->e_i * leave_slave->Mi * leave_slave->Ni;
@@ -321,17 +341,26 @@ MTokenResult CrtManager::LeKeyUpdate(
         e_MK += mkg.n_total;
     }
 
-    // Step 4: MT'_K = e_MK + T
-    result.e_MK = e_MK;
-    result.MT_K = e_MK + current.T;
-
     // Update user list — remove leaving slave
     result.user_indices.clear();
     for (auto idx : current.user_indices) {
-        if (idx != leave_slave_index) {
+        if (idx != leave_slave_index)
             result.user_indices.push_back(idx);
-        }
     }
+
+    // Recompute N_group without leaving member
+    BigInt N_group = BigInt(1);
+    for (const auto& slave : mkg.slaves) {
+        bool in_group = false;
+        for (auto idx : result.user_indices)
+            if (slave.uav_index == idx) { in_group = true; break; }
+        if (in_group) N_group *= slave.n_i;
+    }
+
+    // MT'_K = pow(T, e_MK, N_group)
+    result.e_MK    = e_MK;
+    result.N_group = N_group;
+    result.MT_K    = BigIntOps::ModPow(current.T, e_MK, N_group);
 
     UAV_LOG_INFO(uav::log::channels::CRYPTO,
         "LeKeyUpdate: cluster=" << current.cluster_id
@@ -552,6 +581,8 @@ bool CrtManager::VerifyCluster(utils::u32 cluster_id) const {
         }
         if (!in_group) continue;
 
+        // MT_K = pow(tek_int, e_MK, N_group)
+        // slave recovers: pow(MT_K, d_i, n_i) == tek_int % n_i
         BigInt recovered = BigIntOps::ModPow(
             cs.mtoken.MT_K, sk.d_i, sk.n_i);
         BigInt T_mod = BigIntOps::Mod(cs.mtoken.T, sk.n_i);
@@ -575,5 +606,4 @@ bool CrtManager::VerifyAll() const {
 
 } // namespace crypto
 } // namespace uav
-EOF
-echo "uav-crt-manager.cc created"
+
