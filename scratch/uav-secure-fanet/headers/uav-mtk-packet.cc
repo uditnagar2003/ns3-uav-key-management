@@ -143,7 +143,7 @@ MtkPacket MtkPacket::Build(
     utils::u32              version,
     const crypto::BigInt&   mtk,
     const crypto::BigInt&   n_group,
-    const crypto::HmacKey&  hmac_key,
+    [[maybe_unused]] const crypto::HmacKey&  hmac_key,
     crypto::SequenceCounter& seq)
 {
     MtkPacket pkt;

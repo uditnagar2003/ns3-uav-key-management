@@ -37,7 +37,7 @@ namespace crypto {
 namespace {
 
 /// Simple Miller-Rabin wrapper using boost's mt19937
-boost::random::mt19937 MakeBoostRng(std::mt19937_64& rng) {
+[[maybe_unused]] boost::random::mt19937 MakeBoostRng(std::mt19937_64& rng) {
     boost::random::mt19937 boost_mt;
     boost_mt.seed(static_cast<uint32_t>(rng()));
     return boost_mt;
@@ -176,7 +176,7 @@ BigInt BigIntOps::RandomBits(unsigned bits, std::mt19937_64& rng) {
     return result;
 }
 
-BigInt BigIntOps::GenerateSafePrime(unsigned bits, std::mt19937_64& rng) {
+BigInt BigIntOps::GenerateSafePrime(unsigned bits, [[maybe_unused]] std::mt19937_64& rng) {
     if (bits < 8) {
         UAV_THROW(utils::CryptoException,
                   "GenerateSafePrime: bits must be >= 8");
