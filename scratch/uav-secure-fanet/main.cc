@@ -1,5 +1,5 @@
 /**
- * main.cc - Module 41: Join Security Event
+ * main.cc - Module 45: Compromise Detection
  */
 
 #include "ns3/core-module.h"
@@ -20,7 +20,8 @@
 #include "apps/uav-multicast-manager.h"
 #include "apps/uav-tek-manager.h"
 #include "apps/uav-mtk-distribution.h"
-#include "apps/uav-join-event.h"
+#include "apps/uav-leave-event.h"
+#include "apps/uav-compromise-detector.h"
 #include "crypto/uav-crypto-params.h"
 
 NS_LOG_COMPONENT_DEFINE("UavSecureFanet");
@@ -47,7 +48,6 @@ int main(int argc, char* argv[])
 
     routing::CsmaBackboneManager backbone(topo);
     backbone.ConfigureStaticRoutes();
-    routing::OlsrManager olsr_mgr(topo);
     routing::QueueManager queue_mgr(topo);
     queue_mgr.ConfigureAll();
     routing::FlowMonitorManager flow_mgr(topo);
@@ -57,15 +57,6 @@ int main(int argc, char* argv[])
     mob_mgr.InstallGaussMarkov();
     mobility::JammerMobilityManager jammer(topo);
     jammer.InstallRandomWaypoint(10.0, 10.0, 42);
-
-    // KDC + SKDCs + UAVs
-    Ptr<apps::KdcApplication> kdc_app =
-        CreateObject<apps::KdcApplication>();
-    kdc_app->SetTopology(&topo);
-    kdc_app->SetCryptoParams(&params);
-    topo.kdc_node.Get(0)->AddApplication(kdc_app);
-    kdc_app->SetStartTime(Seconds(0.5));
-    kdc_app->SetStopTime(Seconds(20.0));
 
     std::array<Ptr<apps::SkdcApplication>, 3> skdc_apps;
     for (uint32_t c = 0; c < 3; ++c) {
@@ -80,100 +71,95 @@ int main(int argc, char* argv[])
         skdc_apps[c]->SetStopTime(Seconds(20.0));
     }
 
-    std::vector<Ptr<apps::UavApplication>> uav_apps;
-    for (uint32_t uav = 0; uav < 18; ++uav) {
-        auto app =
-            CreateObject<apps::UavApplication>();
-        app->SetUavId(uav, uav%6, uav/6);
-        app->SetTopology(&topo);
-        app->SetCryptoParams(&params);
-        topo.uav_nodes.Get(uav)->AddApplication(app);
-        app->SetStartTime(Seconds(2.0));
-        app->SetStopTime(Seconds(20.0));
-        uav_apps.push_back(app);
-    }
-
-    // Security managers
     apps::TekManager tek_mgr(&params);
     tek_mgr.Initialize();
-
     apps::MulticastManager mc_mgr(&topo, &params);
     mc_mgr.Initialize();
-
     apps::MtkDistributionManager dist_mgr(
         &topo, &params, &tek_mgr, &mc_mgr);
-
-    // Module 41: Join Event Manager
-    NS_LOG_UNCOND(
-        "=== Module 41: Join Security Event ===");
-
-    apps::JoinEventManager join_mgr(
+    apps::LeaveEventManager leave_mgr(
         &topo, &params,
         &mc_mgr, &dist_mgr, &tek_mgr);
 
-    join_mgr.SetJoinCallback([](
-        const apps::JoinRecord& rec)
+    // Module 45: Compromise Detector
+    NS_LOG_UNCOND(
+        "=== Module 45: Compromise Detection ===");
+
+    apps::CompromiseDetector detector(
+        &topo, &mc_mgr, &dist_mgr,
+        &tek_mgr, &leave_mgr);
+
+    detector.SetCallback([](
+        const apps::CompromiseEvent& ev)
     {
-        NS_LOG_UNCOND("  [JOIN] UAV" << rec.uav_id
-            << " C" << rec.cluster_id
-            << " auth=" << rec.authenticated
-            << " joined=" << rec.joined
-            << " tek=" << rec.tek_received);
+        NS_LOG_UNCOND("  [COMPROMISE] UAV"
+            << ev.uav_id
+            << " C" << ev.cluster_id
+            << " reason="
+            << apps::CompromiseReasonStr(ev.reason)
+            << " revoked=" << ev.revoked);
     });
 
-    // Test 1: Valid join — new UAV (id=18, idx=0)
-    // First remove one to make room
-    NS_LOG_UNCOND("\nStep 1: Remove UAV5 from C0...");
-    mc_mgr.RemoveMember(0, 5, 5);
-    NS_LOG_UNCOND("  C0 size: "
-        << mc_mgr.GetGroupSize(0));
+    // Test 1: HMAC failure detection
+    NS_LOG_UNCOND("\nTest 1: HMAC failure UAV2 C0...");
+    detector.ReportHmacFailure(
+        2, 0, 2, skdc_apps[0]);
+    NS_LOG_UNCOND("  Compromised: "
+        << detector.IsCompromised(2));
+    NS_LOG_UNCOND("  Revoked:     "
+        << detector.IsRevoked(2));
+    bool t1_ok = detector.IsCompromised(2) &&
+                 detector.IsRevoked(2);
+    NS_LOG_UNCOND("  Test 1: "
+        << (t1_ok ? "PASS" : "FAIL"));
 
-    NS_LOG_UNCOND("\nStep 2: UAV18 joins C0...");
-    bool ok1 = join_mgr.ProcessJoin(
-        18, 5, 0,
-        skdc_apps[0].operator->(),
-        nullptr);
-    NS_LOG_UNCOND("  Join result: "
-        << (ok1 ? "PASS" : "FAIL"));
+    // Test 2: Replay attack detection
+    NS_LOG_UNCOND("\nTest 2: Replay attack UAV8 C1...");
+    detector.ReportReplayAttack(
+        8, 1, 2, skdc_apps[1]);
+    bool t2_ok = detector.IsRevoked(8);
+    NS_LOG_UNCOND("  Test 2: "
+        << (t2_ok ? "PASS" : "FAIL"));
 
-    // Test 2: Second join same cluster
-    NS_LOG_UNCOND("\nStep 3: UAV19 joins C1...");
-    // First make room in C1
-    mc_mgr.RemoveMember(1, 10, 10);
-    bool ok2 = join_mgr.ProcessJoin(
-        19, 4, 1,
-        skdc_apps[1].operator->(),
-        nullptr);
-    NS_LOG_UNCOND("  Join result: "
-        << (ok2 ? "PASS" : "FAIL"));
+    // Test 3: Invalid TEK
+    NS_LOG_UNCOND("\nTest 3: Invalid TEK UAV14 C2...");
+    detector.ReportInvalidTek(
+        14, 2, 2, skdc_apps[2]);
+    bool t3_ok = detector.IsRevoked(14);
+    NS_LOG_UNCOND("  Test 3: "
+        << (t3_ok ? "PASS" : "FAIL"));
 
-    // Test 3: Verify cluster sizes updated
-    NS_LOG_UNCOND("\nCluster sizes after joins:");
-    for (uint32_t c = 0; c < 3; ++c) {
+    // Test 4: Duplicate report (already revoked)
+    NS_LOG_UNCOND("\nTest 4: Duplicate report UAV2...");
+    utils::u64 detections_before =
+        detector.GetTotalDetections();
+    detector.ReportExternal(
+        2, 0, 2, skdc_apps[0]);
+    bool t4_ok = (detector.GetTotalDetections()
+                  == detections_before);
+    NS_LOG_UNCOND("  Duplicate ignored: "
+        << (t4_ok ? "PASS" : "FAIL"));
+
+    // Print status
+    detector.PrintStatus();
+
+    // Verify cluster sizes after revocations
+    NS_LOG_UNCOND("\nCluster sizes:");
+    for (uint32_t c = 0; c < 3; ++c)
         NS_LOG_UNCOND("  C" << c << ": "
             << mc_mgr.GetGroupSize(c)
-            << " members v"
-            << mc_mgr.GetVersion(c));
-    }
-
-    // Test 4: Print join stats
-    join_mgr.PrintJoinStats();
-
-    // Test 5: Verify MT_K distributions
-    NS_LOG_UNCOND("\nMT_K distributions: "
-        << dist_mgr.GetTotalBroadcasts());
+            << " v" << mc_mgr.GetVersion(c));
 
     bool stats_ok =
-        (join_mgr.GetTotalJoins() == 2) &&
-        (join_mgr.GetFailedJoins() == 0);
-    NS_LOG_UNCOND("Join stats: "
+        (detector.GetTotalDetections() == 3) &&
+        (detector.GetTotalRevocations() == 3);
+    NS_LOG_UNCOND("\nDetector stats: "
         << (stats_ok ? "PASS" : "FAIL"));
 
-    // Run simulation
     Simulator::Stop(Seconds(5.0));
     Simulator::Run();
 
-    NS_LOG_UNCOND("\nModule 41: OK");
+    NS_LOG_UNCOND("\nModule 45: OK");
     Simulator::Destroy();
     return 0;
 }

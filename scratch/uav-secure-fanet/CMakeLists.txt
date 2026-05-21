@@ -47,6 +47,10 @@ set(uav_sources
     apps/uav-tek-manager.cc
     apps/uav-mtk-distribution.cc
     apps/uav-join-event.cc
+    apps/uav-leave-event.cc
+    apps/uav-jammer-manager.cc
+    apps/uav-handover-manager.cc
+    apps/uav-compromise-detector.cc
 )
 
 build_exec(
