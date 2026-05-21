@@ -26,8 +26,6 @@
 #include "ns3/network-module.h"
 #include "ns3/wifi-module.h"
 #include "ns3/csma-module.h"
-#include "ns3/traffic-control-module.h"
-#include "ns3/queue-disc.h"
 
 #include "uav-topology.h"
 #include "uav-types.h"

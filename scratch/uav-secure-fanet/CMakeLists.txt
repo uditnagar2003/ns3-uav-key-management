@@ -36,6 +36,17 @@ set(uav_sources
     routing/uav-olsr-manager.cc
     routing/uav-flowmonitor.cc
     routing/uav-queue-manager.cc
+    mobility/uav-mobility-manager.cc
+    mobility/uav-gauss-markov.cc
+    mobility/uav-cluster-movement.cc
+    mobility/uav-jammer-mobility.cc
+    apps/uav-kdc-app.cc
+    apps/uav-skdc-app.cc
+    apps/uav-uav-app.cc
+    apps/uav-multicast-manager.cc
+    apps/uav-tek-manager.cc
+    apps/uav-mtk-distribution.cc
+    apps/uav-join-event.cc
 )
 
 build_exec(
@@ -58,4 +69,6 @@ target_include_directories(
     ${CMAKE_CURRENT_SOURCE_DIR}/crypto
     ${CMAKE_CURRENT_SOURCE_DIR}/headers
     ${CMAKE_CURRENT_SOURCE_DIR}/routing
+    ${CMAKE_CURRENT_SOURCE_DIR}/mobility
+    ${CMAKE_CURRENT_SOURCE_DIR}/apps
 )
