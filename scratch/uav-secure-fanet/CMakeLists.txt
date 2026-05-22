@@ -52,6 +52,7 @@ set(uav_sources
     apps/uav-handover-manager.cc
     apps/uav-compromise-detector.cc
     apps/uav-rekey-manager.cc
+    apps/uav-jammer-attack-handler.cc
 )
 
 build_exec(
