@@ -1,5 +1,5 @@
 /**
- * main.cc - Module 54: Delay Metrics
+ * main.cc - Module 55: PDR Metrics
  */
 #include "ns3/core-module.h"
 #include "ns3/network-module.h"
@@ -22,6 +22,7 @@
 #include "visualization/uav-netanim.h"
 #include "metrics/uav-throughput-metrics.h"
 #include "metrics/uav-delay-metrics.h"
+#include "metrics/uav-pdr-metrics.h"
 #include "crypto/uav-crypto-params.h"
 
 #include <fstream>
@@ -90,79 +91,67 @@ int main(int argc, char* argv[])
     visualization::NetAnimManager netanim(&topo, OUTPUT_DIR);
     netanim.Initialize();
 
-    // Module 53 (already verified)
     metrics::ThroughputMetrics tput_mgr(&topo, &flow_mgr);
-    tput_mgr.SchedulePeriodicSample(1.0);
-
-    // ===================================================
-    // Module 54: Delay Metrics
-    // ===================================================
-    NS_LOG_UNCOND("=== Module 54: Delay Metrics ===");
-
     metrics::DelayMetrics delay_mgr(&topo, &flow_mgr);
-    delay_mgr.SchedulePeriodicSample(1.0);
+
+    // ===================================================
+    // Module 55: PDR Metrics
+    // ===================================================
+    NS_LOG_UNCOND("=== Module 55: PDR Metrics ===");
+
+    metrics::PdrMetrics pdr_mgr(&topo, &flow_mgr);
+    pdr_mgr.SchedulePeriodicSample(1.0);
 
     Simulator::Stop(Seconds(10.0));
     Simulator::Run();
 
-    // Collect and compute
     flow_mgr.CollectMetrics(10.0);
     tput_mgr.Compute();
     delay_mgr.Compute();
+    pdr_mgr.Compute();
 
     // Test 1: compute without crash
     NS_LOG_UNCOND("\nTest 1: Compute without crash...");
     NS_LOG_UNCOND("  Test 1: PASS");
 
-    // Test 2: global delay >= 0
-    NS_LOG_UNCOND("\nTest 2: Global delay...");
-    double avg = delay_mgr.GetGlobalAvgDelay();
-    double min = delay_mgr.GetGlobalMinDelay();
-    double max = delay_mgr.GetGlobalMaxDelay();
-    NS_LOG_UNCOND("  Avg=" << avg
-        << " Min=" << min
-        << " Max=" << max << " ms");
-    NS_LOG_UNCOND("  Test 2: "
-        << (avg >= 0.0 ? "PASS" : "FAIL"));
+    // Test 2: global PDR in range [0,1]
+    NS_LOG_UNCOND("\nTest 2: Global PDR range...");
+    double gpdr = pdr_mgr.GetGlobalPdr();
+    NS_LOG_UNCOND("  Global PDR: " << gpdr);
+    bool t2_ok = (gpdr >= 0.0 && gpdr <= 1.0);
+    NS_LOG_UNCOND("  Test 2: " << (t2_ok ? "PASS":"FAIL"));
 
-    // Test 3: per-cluster delay
-    NS_LOG_UNCOND("\nTest 3: Per-cluster delay...");
-    for (uint32_t c = 0; c < 3; ++c) {
+    // Test 3: per-cluster PDR
+    NS_LOG_UNCOND("\nTest 3: Per-cluster PDR...");
+    for (uint32_t c = 0; c < 3; ++c)
         NS_LOG_UNCOND("  C" << c
-            << " avg=" << delay_mgr.GetClusterAvgDelay(c)
-            << " jitter=" << delay_mgr.GetClusterJitter(c)
-            << " ms");
-    }
+            << " PDR=" << pdr_mgr.GetClusterPdr(c));
     NS_LOG_UNCOND("  Test 3: PASS");
 
-    // Test 4: per-UAV delay
-    NS_LOG_UNCOND("\nTest 4: Per-UAV delay...");
-    for (uint32_t i = 0; i < 18; ++i) {
-        double d = delay_mgr.GetUavAvgDelay(i);
-        if (d > 0.0)
-            NS_LOG_UNCOND("  UAV" << i
-                << ": " << d << " ms");
-    }
+    // Test 4: packet counts
+    NS_LOG_UNCOND("\nTest 4: Packet counts...");
+    NS_LOG_UNCOND("  TX=" << pdr_mgr.GetGlobalTx()
+        << " RX=" << pdr_mgr.GetGlobalRx()
+        << " Lost=" << pdr_mgr.GetGlobalLost());
     NS_LOG_UNCOND("  Test 4: PASS");
 
     // Test 5: periodic samples
     NS_LOG_UNCOND("\nTest 5: Periodic samples...");
     NS_LOG_UNCOND("  Samples: "
-        << delay_mgr.GetSamples().size());
+        << pdr_mgr.GetSamples().size());
     NS_LOG_UNCOND("  Test 5: PASS");
 
     // Test 6: CSV export
     NS_LOG_UNCOND("\nTest 6: CSV export...");
-    std::string csv = std::string(OUTPUT_DIR)
-        + "/delay.csv";
-    delay_mgr.WriteCsv(csv);
+    std::string csv = std::string(OUTPUT_DIR) + "/pdr.csv";
+    pdr_mgr.WriteCsv(csv);
     std::ifstream f(csv);
     NS_LOG_UNCOND("  CSV created: "
         << (f.good() ? "PASS" : "FAIL"));
 
-    delay_mgr.PrintSummary();
+    pdr_mgr.PrintSummary();
 
-    NS_LOG_UNCOND("\nModule 54: OK");
+    NS_LOG_UNCOND("\nModule 55: OK");
     Simulator::Destroy();
     return 0;
 }
