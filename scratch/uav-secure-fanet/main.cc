@@ -1,7 +1,6 @@
 /**
- * main.cc - Module 45: Compromise Detection
+ * main.cc - Module 46: Rekey Event Logic
  */
-
 #include "ns3/core-module.h"
 #include "ns3/network-module.h"
 #include "ns3/internet-module.h"
@@ -20,14 +19,16 @@
 #include "apps/uav-multicast-manager.h"
 #include "apps/uav-tek-manager.h"
 #include "apps/uav-mtk-distribution.h"
-#include "apps/uav-leave-event.h"
-#include "apps/uav-compromise-detector.h"
+#include "apps/uav-rekey-manager.h"
 #include "crypto/uav-crypto-params.h"
 
 NS_LOG_COMPONENT_DEFINE("UavSecureFanet");
-
 using namespace ns3;
 using namespace uav;
+
+static const char* CRYPTO_JSON =
+    "/home/udit/ns-allinone-3.43/ns-3.43"
+    "/scratch/uav-secure-fanet/json/crypto_params.json";
 
 int main(int argc, char* argv[])
 {
@@ -40,7 +41,7 @@ int main(int argc, char* argv[])
 
     crypto::CryptoParamsFile params =
         crypto::CryptoParamsLoader::LoadFromFile(
-            "/home/udit/ns-allinone-3.43/ns-3.43/scratch/uav-secure-fanet/json/crypto_params.json");
+            CRYPTO_JSON);
 
     routing::TopologyConfig cfg;
     routing::TopologyBuilder builder(cfg);
@@ -60,13 +61,11 @@ int main(int argc, char* argv[])
 
     std::array<Ptr<apps::SkdcApplication>, 3> skdc_apps;
     for (uint32_t c = 0; c < 3; ++c) {
-        skdc_apps[c] =
-            CreateObject<apps::SkdcApplication>();
+        skdc_apps[c] = CreateObject<apps::SkdcApplication>();
         skdc_apps[c]->SetClusterId(c);
         skdc_apps[c]->SetTopology(&topo);
         skdc_apps[c]->SetCryptoParams(&params);
-        topo.skdc_nodes.Get(c)
-            ->AddApplication(skdc_apps[c]);
+        topo.skdc_nodes.Get(c)->AddApplication(skdc_apps[c]);
         skdc_apps[c]->SetStartTime(Seconds(1.0));
         skdc_apps[c]->SetStopTime(Seconds(20.0));
     }
@@ -77,89 +76,73 @@ int main(int argc, char* argv[])
     mc_mgr.Initialize();
     apps::MtkDistributionManager dist_mgr(
         &topo, &params, &tek_mgr, &mc_mgr);
-    apps::LeaveEventManager leave_mgr(
-        &topo, &params,
-        &mc_mgr, &dist_mgr, &tek_mgr);
 
-    // Module 45: Compromise Detector
-    NS_LOG_UNCOND(
-        "=== Module 45: Compromise Detection ===");
+    NS_LOG_UNCOND("=== Module 46: Rekey Event Logic ===");
 
-    apps::CompromiseDetector detector(
-        &topo, &mc_mgr, &dist_mgr,
-        &tek_mgr, &leave_mgr);
+    apps::RekeyManager rekey_mgr(
+        &topo, &params, &tek_mgr, &dist_mgr, &mc_mgr);
 
-    detector.SetCallback([](
-        const apps::CompromiseEvent& ev)
-    {
-        NS_LOG_UNCOND("  [COMPROMISE] UAV"
-            << ev.uav_id
-            << " C" << ev.cluster_id
-            << " reason="
-            << apps::CompromiseReasonStr(ev.reason)
-            << " revoked=" << ev.revoked);
+    rekey_mgr.SetRekeyCallback([](const apps::RekeyEvent& ev) {
+        NS_LOG_UNCOND("  [REKEY] C" << ev.cluster_id
+            << " " << apps::RekeyReasonStr(ev.reason)
+            << " v" << ev.old_version
+            << "->" << ev.new_version
+            << " ok=" << ev.success);
     });
 
-    // Test 1: HMAC failure detection
-    NS_LOG_UNCOND("\nTest 1: HMAC failure UAV2 C0...");
-    detector.ReportHmacFailure(
-        2, 0, 2, skdc_apps[0]);
-    NS_LOG_UNCOND("  Compromised: "
-        << detector.IsCompromised(2));
-    NS_LOG_UNCOND("  Revoked:     "
-        << detector.IsRevoked(2));
-    bool t1_ok = detector.IsCompromised(2) &&
-                 detector.IsRevoked(2);
-    NS_LOG_UNCOND("  Test 1: "
-        << (t1_ok ? "PASS" : "FAIL"));
+    // Test 1: Leave rekey C0
+    NS_LOG_UNCOND("\nTest 1: Leave rekey C0...");
+    uint32_t v0 = tek_mgr.GetVersion(0);
+    bool ok1 = rekey_mgr.TriggerRekey(
+        0, apps::RekeyReason::LEAVE,
+        skdc_apps[0].operator->());
+    NS_LOG_UNCOND("  v" << v0 << "->"
+        << tek_mgr.GetVersion(0)
+        << " " << (ok1 ? "PASS" : "FAIL"));
 
-    // Test 2: Replay attack detection
-    NS_LOG_UNCOND("\nTest 2: Replay attack UAV8 C1...");
-    detector.ReportReplayAttack(
-        8, 1, 2, skdc_apps[1]);
-    bool t2_ok = detector.IsRevoked(8);
-    NS_LOG_UNCOND("  Test 2: "
-        << (t2_ok ? "PASS" : "FAIL"));
+    // Test 2: Compromise rekey C1
+    NS_LOG_UNCOND("\nTest 2: Compromise rekey C1...");
+    bool ok2 = rekey_mgr.TriggerRekey(
+        1, apps::RekeyReason::COMPROMISE,
+        skdc_apps[1].operator->());
+    NS_LOG_UNCOND("  C1 v" << tek_mgr.GetVersion(1)
+        << " " << (ok2 ? "PASS" : "FAIL"));
 
-    // Test 3: Invalid TEK
-    NS_LOG_UNCOND("\nTest 3: Invalid TEK UAV14 C2...");
-    detector.ReportInvalidTek(
-        14, 2, 2, skdc_apps[2]);
-    bool t3_ok = detector.IsRevoked(14);
-    NS_LOG_UNCOND("  Test 3: "
-        << (t3_ok ? "PASS" : "FAIL"));
-
-    // Test 4: Duplicate report (already revoked)
-    NS_LOG_UNCOND("\nTest 4: Duplicate report UAV2...");
-    utils::u64 detections_before =
-        detector.GetTotalDetections();
-    detector.ReportExternal(
-        2, 0, 2, skdc_apps[0]);
-    bool t4_ok = (detector.GetTotalDetections()
-                  == detections_before);
-    NS_LOG_UNCOND("  Duplicate ignored: "
-        << (t4_ok ? "PASS" : "FAIL"));
-
-    // Print status
-    detector.PrintStatus();
-
-    // Verify cluster sizes after revocations
-    NS_LOG_UNCOND("\nCluster sizes:");
+    // Test 3: Global KDC rekey
+    NS_LOG_UNCOND("\nTest 3: Global KDC rekey...");
+    rekey_mgr.GlobalRekey(skdc_apps, apps::RekeyReason::KDC_INIT);
     for (uint32_t c = 0; c < 3; ++c)
-        NS_LOG_UNCOND("  C" << c << ": "
-            << mc_mgr.GetGroupSize(c)
-            << " v" << mc_mgr.GetVersion(c));
+        NS_LOG_UNCOND("  C" << c << " v" << tek_mgr.GetVersion(c));
 
-    bool stats_ok =
-        (detector.GetTotalDetections() == 3) &&
-        (detector.GetTotalRevocations() == 3);
-    NS_LOG_UNCOND("\nDetector stats: "
+    // Test 4: TEK derivation
+    NS_LOG_UNCOND("\nTest 4: TEK derivation...");
+    auto old_tek = crypto::AesGcm::GenerateKey();
+    utils::Nonce128 nonce;
+    nonce.fill(0);
+    RAND_bytes(nonce.data(), static_cast<int>(nonce.size()));
+    auto new_tek = rekey_mgr.DeriveTek(
+        old_tek, utils::TimeUtils::NowEpochMicros(), nonce);
+    NS_LOG_UNCOND("  TEK changed: "
+        << (old_tek != new_tek ? "PASS" : "FAIL"));
+
+    // Test 5: Periodic schedule
+    NS_LOG_UNCOND("\nTest 5: Periodic C2 (2s)...");
+    rekey_mgr.SchedulePeriodic(2, skdc_apps[2], 2.0);
+
+    rekey_mgr.PrintRekeyStats();
+
+    bool stats_ok = (rekey_mgr.GetTotalRekeys() == 5)
+        && (rekey_mgr.GetRekeyCount(0) >= 2)
+        && (rekey_mgr.GetRekeyCount(1) >= 2);
+    NS_LOG_UNCOND("\nRekey stats: "
         << (stats_ok ? "PASS" : "FAIL"));
 
     Simulator::Stop(Seconds(5.0));
     Simulator::Run();
 
-    NS_LOG_UNCOND("\nModule 45: OK");
+    NS_LOG_UNCOND("\nTotal rekeys after sim: "
+        << rekey_mgr.GetTotalRekeys());
+    NS_LOG_UNCOND("\nModule 46: OK");
     Simulator::Destroy();
     return 0;
 }
