@@ -1,5 +1,5 @@
 /**
- * main.cc - Module 55: PDR Metrics
+ * main.cc - Module 57: Rekey Latency Metrics
  */
 #include "ns3/core-module.h"
 #include "ns3/network-module.h"
@@ -23,6 +23,8 @@
 #include "metrics/uav-throughput-metrics.h"
 #include "metrics/uav-delay-metrics.h"
 #include "metrics/uav-pdr-metrics.h"
+#include "metrics/uav-routing-overhead.h"
+#include "metrics/uav-rekey-latency.h"
 #include "crypto/uav-crypto-params.h"
 
 #include <fstream>
@@ -91,16 +93,28 @@ int main(int argc, char* argv[])
     visualization::NetAnimManager netanim(&topo, OUTPUT_DIR);
     netanim.Initialize();
 
-    metrics::ThroughputMetrics tput_mgr(&topo, &flow_mgr);
-    metrics::DelayMetrics delay_mgr(&topo, &flow_mgr);
+    metrics::ThroughputMetrics  tput_mgr(&topo, &flow_mgr);
+    metrics::DelayMetrics       delay_mgr(&topo, &flow_mgr);
+    metrics::PdrMetrics         pdr_mgr(&topo, &flow_mgr);
+    metrics::RoutingOverheadMetrics overhead_mgr(&topo, &flow_mgr);
 
     // ===================================================
-    // Module 55: PDR Metrics
+    // Module 57: Rekey Latency Metrics
     // ===================================================
-    NS_LOG_UNCOND("=== Module 55: PDR Metrics ===");
+    NS_LOG_UNCOND("=== Module 57: Rekey Latency Metrics ===");
 
-    metrics::PdrMetrics pdr_mgr(&topo, &flow_mgr);
-    pdr_mgr.SchedulePeriodicSample(1.0);
+    metrics::RekeyLatencyMetrics rekey_lat(
+        &topo, &flow_mgr, &rekey_mgr);
+
+    // Trigger some rekeys before sim to have history
+    rekey_mgr.TriggerRekey(0, apps::RekeyReason::LEAVE,
+        skdc_apps[0].operator->());
+    rekey_mgr.TriggerRekey(1, apps::RekeyReason::COMPROMISE,
+        skdc_apps[1].operator->());
+    rekey_mgr.TriggerRekey(2, apps::RekeyReason::HANDOVER,
+        skdc_apps[2].operator->());
+    rekey_mgr.GlobalRekey(skdc_apps,
+        apps::RekeyReason::KDC_INIT);
 
     Simulator::Stop(Seconds(10.0));
     Simulator::Run();
@@ -109,49 +123,60 @@ int main(int argc, char* argv[])
     tput_mgr.Compute();
     delay_mgr.Compute();
     pdr_mgr.Compute();
+    overhead_mgr.Compute(10.0);
+    rekey_lat.Compute();
 
-    // Test 1: compute without crash
-    NS_LOG_UNCOND("\nTest 1: Compute without crash...");
-    NS_LOG_UNCOND("  Test 1: PASS");
+    // Test 1: total rekeys counted
+    NS_LOG_UNCOND("\nTest 1: Total rekeys counted...");
+    uint64_t total = rekey_lat.GetTotalRekeys();
+    NS_LOG_UNCOND("  Total rekeys: " << total
+        << " (expect >=6): "
+        << (total >= 6 ? "PASS" : "FAIL"));
 
-    // Test 2: global PDR in range [0,1]
-    NS_LOG_UNCOND("\nTest 2: Global PDR range...");
-    double gpdr = pdr_mgr.GetGlobalPdr();
-    NS_LOG_UNCOND("  Global PDR: " << gpdr);
-    bool t2_ok = (gpdr >= 0.0 && gpdr <= 1.0);
-    NS_LOG_UNCOND("  Test 2: " << (t2_ok ? "PASS":"FAIL"));
+    // Test 2: avg latency >= 0
+    NS_LOG_UNCOND("\nTest 2: Avg latency...");
+    double avg = rekey_lat.GetAvgLatency();
+    NS_LOG_UNCOND("  Avg: " << avg << " ms");
+    NS_LOG_UNCOND("  Test 2: "
+        << (avg >= 0.0 ? "PASS" : "FAIL"));
 
-    // Test 3: per-cluster PDR
-    NS_LOG_UNCOND("\nTest 3: Per-cluster PDR...");
+    // Test 3: min <= avg <= max
+    NS_LOG_UNCOND("\nTest 3: Min/Max latency...");
+    double mn = rekey_lat.GetMinLatency();
+    double mx = rekey_lat.GetMaxLatency();
+    NS_LOG_UNCOND("  Min=" << mn
+        << " Avg=" << avg
+        << " Max=" << mx << " ms");
+    bool t3_ok = (mn <= avg && avg <= mx + 0.001);
+    NS_LOG_UNCOND("  Test 3: "
+        << (t3_ok ? "PASS" : "FAIL"));
+
+    // Test 4: per-cluster latency
+    NS_LOG_UNCOND("\nTest 4: Per-cluster latency...");
     for (uint32_t c = 0; c < 3; ++c)
-        NS_LOG_UNCOND("  C" << c
-            << " PDR=" << pdr_mgr.GetClusterPdr(c));
-    NS_LOG_UNCOND("  Test 3: PASS");
-
-    // Test 4: packet counts
-    NS_LOG_UNCOND("\nTest 4: Packet counts...");
-    NS_LOG_UNCOND("  TX=" << pdr_mgr.GetGlobalTx()
-        << " RX=" << pdr_mgr.GetGlobalRx()
-        << " Lost=" << pdr_mgr.GetGlobalLost());
+        NS_LOG_UNCOND("  C" << c << ": "
+            << rekey_lat.GetClusterAvgLatency(c) << " ms");
     NS_LOG_UNCOND("  Test 4: PASS");
 
-    // Test 5: periodic samples
-    NS_LOG_UNCOND("\nTest 5: Periodic samples...");
-    NS_LOG_UNCOND("  Samples: "
-        << pdr_mgr.GetSamples().size());
-    NS_LOG_UNCOND("  Test 5: PASS");
+    // Test 5: samples populated
+    NS_LOG_UNCOND("\nTest 5: Samples...");
+    size_t samples = rekey_lat.GetSamples().size();
+    NS_LOG_UNCOND("  Samples: " << samples
+        << " (expect >=6): "
+        << (samples >= 6 ? "PASS" : "FAIL"));
 
     // Test 6: CSV export
     NS_LOG_UNCOND("\nTest 6: CSV export...");
-    std::string csv = std::string(OUTPUT_DIR) + "/pdr.csv";
-    pdr_mgr.WriteCsv(csv);
+    std::string csv = std::string(OUTPUT_DIR)
+        + "/rekey_latency.csv";
+    rekey_lat.WriteCsv(csv);
     std::ifstream f(csv);
     NS_LOG_UNCOND("  CSV created: "
         << (f.good() ? "PASS" : "FAIL"));
 
-    pdr_mgr.PrintSummary();
+    rekey_lat.PrintSummary();
 
-    NS_LOG_UNCOND("\nModule 55: OK");
+    NS_LOG_UNCOND("\nModule 57: OK");
     Simulator::Destroy();
     return 0;
 }
