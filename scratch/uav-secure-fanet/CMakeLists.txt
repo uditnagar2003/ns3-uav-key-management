@@ -64,6 +64,7 @@ set(uav_sources
     metrics/uav-routing-overhead.cc
     metrics/uav-rekey-latency.cc
     metrics/uav-sinr-metrics.cc
+    metrics/uav-csv-export.cc
 )
 
 build_exec(

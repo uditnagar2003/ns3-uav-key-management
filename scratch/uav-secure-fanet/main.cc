@@ -1,5 +1,5 @@
 /**
- * main.cc - Module 58: SINR Metrics
+ * main.cc - Module 59: CSV Export Manager
  */
 #include "ns3/core-module.h"
 #include "ns3/network-module.h"
@@ -26,6 +26,7 @@
 #include "metrics/uav-routing-overhead.h"
 #include "metrics/uav-rekey-latency.h"
 #include "metrics/uav-sinr-metrics.h"
+#include "metrics/uav-csv-export.h"
 #include "crypto/uav-crypto-params.h"
 
 #include <fstream>
@@ -95,86 +96,119 @@ int main(int argc, char* argv[])
     visualization::NetAnimManager netanim(&topo, OUTPUT_DIR);
     netanim.Initialize();
 
+    // All metrics
+    metrics::ThroughputMetrics     tput_mgr(&topo, &flow_mgr);
+    metrics::DelayMetrics          delay_mgr(&topo, &flow_mgr);
+    metrics::PdrMetrics            pdr_mgr(&topo, &flow_mgr);
+    metrics::RoutingOverheadMetrics overhead_mgr(&topo, &flow_mgr);
+    metrics::RekeyLatencyMetrics   rekey_lat(&topo, &flow_mgr, &rekey_mgr);
+    metrics::SinrMetrics           sinr_mgr(&topo, &jammer_mgr);
+
+    // Trigger rekeys for history
+    rekey_mgr.TriggerRekey(0, apps::RekeyReason::LEAVE,
+        skdc_apps[0].operator->());
+    rekey_mgr.GlobalRekey(skdc_apps,
+        apps::RekeyReason::KDC_INIT);
+
     // ===================================================
-    // Module 58: SINR Metrics
+    // Module 59: CSV Export Manager
     // ===================================================
-    NS_LOG_UNCOND("=== Module 58: SINR Metrics ===");
+    NS_LOG_UNCOND("=== Module 59: CSV Export Manager ===");
 
-    metrics::SinrMetrics sinr_mgr(&topo, &jammer_mgr);
+    metrics::CsvExportManager csv_mgr(
+        &topo, OUTPUT_DIR,
+        &tput_mgr, &delay_mgr, &pdr_mgr,
+        &overhead_mgr, &rekey_lat, &sinr_mgr,
+        &flow_mgr);
 
-    // Test 1: manual compute
-    NS_LOG_UNCOND("\nTest 1: Manual compute...");
-    sinr_mgr.Compute();
-    NS_LOG_UNCOND("  Test 1: PASS");
-
-    // Test 2: global SINR values
-    NS_LOG_UNCOND("\nTest 2: Global SINR...");
-    double avg = sinr_mgr.GetGlobalAvgSinr();
-    double mn  = sinr_mgr.GetGlobalMinSinr();
-    double mx  = sinr_mgr.GetGlobalMaxSinr();
-    NS_LOG_UNCOND("  Avg=" << avg
-        << " Min=" << mn
-        << " Max=" << mx << " dB");
-    bool t2_ok = (mn <= avg && avg <= mx + 0.001);
-    NS_LOG_UNCOND("  Test 2: "
-        << (t2_ok ? "PASS" : "FAIL"));
-
-    // Test 3: jammed count (jammer at t=0, all UAVs jammed)
-    NS_LOG_UNCOND("\nTest 3: Jammed count...");
-    uint32_t jammed = sinr_mgr.GetJammedCount();
-    NS_LOG_UNCOND("  Jammed: " << jammed << "/18");
-    NS_LOG_UNCOND("  Test 3: "
-        << (jammed > 0 ? "PASS" : "PASS (no jammer yet)"));
-
-    // Test 4: per-UAV SINR
-    NS_LOG_UNCOND("\nTest 4: Per-UAV SINR...");
-    for (uint32_t i = 0; i < 3; ++i) {
-        NS_LOG_UNCOND("  UAV" << i
-            << " SINR=" << sinr_mgr.GetUavSinr(i) << "dB"
-            << " jammed=" << sinr_mgr.IsUavJammed(i)
-            << " drop=" << sinr_mgr.GetUavDropProb(i));
-    }
-    NS_LOG_UNCOND("  Test 4: PASS");
-
-    // Test 5: per-cluster
-    NS_LOG_UNCOND("\nTest 5: Per-cluster SINR...");
-    for (uint32_t c = 0; c < 3; ++c) {
-        NS_LOG_UNCOND("  C" << c
-            << " avg=" << sinr_mgr.GetClusterAvgSinr(c)
-            << "dB jammed="
-            << sinr_mgr.GetClusterJammedCount(c));
-    }
-    NS_LOG_UNCOND("  Test 5: PASS");
-
-    // Test 6: threshold accessible
-    NS_LOG_UNCOND("\nTest 6: SINR threshold...");
-    double thr = sinr_mgr.GetSinrThreshold();
-    NS_LOG_UNCOND("  Threshold: " << thr << " dB"
-        << (thr == 8.0 ? " PASS" : " FAIL"));
-
-    // Test 7: periodic sampling
-    NS_LOG_UNCOND("\nTest 7: Periodic sampling...");
-    sinr_mgr.SchedulePeriodicSample(1.0);
+    // Initialize with 1s interval per spec
+    csv_mgr.Initialize(1.0);
 
     Simulator::Stop(Seconds(5.0));
     Simulator::Run();
 
-    size_t samples = sinr_mgr.GetSamples().size();
-    NS_LOG_UNCOND("  Samples: " << samples
-        << " (expect >18): "
-        << (samples > 18 ? "PASS" : "PASS"));
+    // Post-sim: collect and compute all metrics
+    flow_mgr.CollectMetrics(5.0);
+    tput_mgr.Compute();
+    delay_mgr.Compute();
+    pdr_mgr.Compute();
+    overhead_mgr.Compute(5.0);
+    rekey_lat.Compute();
+    sinr_mgr.Compute();
 
-    // Test 8: CSV export
-    NS_LOG_UNCOND("\nTest 8: CSV export...");
-    std::string csv = std::string(OUTPUT_DIR) + "/sinr.csv";
-    sinr_mgr.WriteCsv(csv);
-    std::ifstream f(csv);
-    NS_LOG_UNCOND("  CSV created: "
-        << (f.good() ? "PASS" : "FAIL"));
+    // Export all
+    csv_mgr.ExportAll(5.0);
 
-    sinr_mgr.PrintSummary();
+    // Test 1: all CSV files created
+    NS_LOG_UNCOND("\nTest 1: CSV files created...");
+    std::vector<std::string> files = {
+        "throughput.csv", "delay.csv", "pdr.csv",
+        "routing_overhead.csv", "rekey_latency.csv",
+        "sinr.csv", "metrics_global.csv",
+        "metrics_per_cluster.csv", "metrics_per_uav.csv"
+    };
+    int ok_count = 0;
+    for (const auto& fn : files) {
+        std::string path = std::string(OUTPUT_DIR) + "/" + fn;
+        std::ifstream f(path);
+        bool ok = f.good();
+        NS_LOG_UNCOND("  " << fn << ": "
+            << (ok ? "PASS" : "FAIL"));
+        if (ok) ++ok_count;
+    }
+    NS_LOG_UNCOND("  Files created: " << ok_count
+        << "/" << files.size() << ": "
+        << (ok_count == (int)files.size()
+            ? "PASS" : "FAIL"));
 
-    NS_LOG_UNCOND("\nModule 58: OK");
+    // Test 2: total exports
+    NS_LOG_UNCOND("\nTest 2: Total exports...");
+    NS_LOG_UNCOND("  Total: "
+        << csv_mgr.GetTotalExports()
+        << " (expect 9): "
+        << (csv_mgr.GetTotalExports() == 9
+            ? "PASS" : "FAIL"));
+
+    // Test 3: metrics_global.csv has correct fields
+    NS_LOG_UNCOND("\nTest 3: metrics_global.csv content...");
+    {
+        std::ifstream f(std::string(OUTPUT_DIR)
+            + "/metrics_global.csv");
+        std::string line;
+        int lines = 0;
+        while (std::getline(f, line)) ++lines;
+        NS_LOG_UNCOND("  Lines: " << lines
+            << " (expect >=15): "
+            << (lines >= 15 ? "PASS" : "FAIL"));
+    }
+
+    // Test 4: metrics_per_uav.csv has 19 lines (header + 18)
+    NS_LOG_UNCOND("\nTest 4: metrics_per_uav.csv rows...");
+    {
+        std::ifstream f(std::string(OUTPUT_DIR)
+            + "/metrics_per_uav.csv");
+        std::string line;
+        int lines = 0;
+        while (std::getline(f, line)) ++lines;
+        NS_LOG_UNCOND("  Lines: " << lines
+            << " (expect 19): "
+            << (lines == 19 ? "PASS" : "FAIL"));
+    }
+
+    // Test 5: metrics_per_cluster.csv has 4 lines
+    NS_LOG_UNCOND("\nTest 5: metrics_per_cluster.csv rows...");
+    {
+        std::ifstream f(std::string(OUTPUT_DIR)
+            + "/metrics_per_cluster.csv");
+        std::string line;
+        int lines = 0;
+        while (std::getline(f, line)) ++lines;
+        NS_LOG_UNCOND("  Lines: " << lines
+            << " (expect 4): "
+            << (lines == 4 ? "PASS" : "FAIL"));
+    }
+
+    NS_LOG_UNCOND("\nModule 59: OK");
     Simulator::Destroy();
     return 0;
 }
