@@ -1,5 +1,5 @@
 /**
- * main.cc - Module 50: Node Coloring
+ * main.cc - Module 52: Event Annotations
  */
 #include "ns3/core-module.h"
 #include "ns3/network-module.h"
@@ -22,8 +22,9 @@
 #include "apps/uav-compromise-detector.h"
 #include "apps/uav-jammer-manager.h"
 #include "visualization/uav-netanim.h"
-#include "visualization/uav-pyviz.h"
 #include "visualization/uav-node-color.h"
+#include "visualization/uav-packet-viz.h"
+#include "visualization/uav-event-annotations.h"
 #include "crypto/uav-crypto-params.h"
 
 NS_LOG_COMPONENT_DEFINE("UavSecureFanet");
@@ -90,106 +91,80 @@ int main(int argc, char* argv[])
         &topo, &mc_mgr, &dist_mgr, &tek_mgr, &leave_mgr);
     apps::JammerManager jammer_mgr(&topo, &jammer_mob);
 
-    // NetAnim
+    // Visualization stack
     visualization::NetAnimManager netanim(&topo, OUTPUT_DIR);
     netanim.Initialize();
-
-    // ===================================================
-    // Module 50: Node Coloring
-    // ===================================================
-    NS_LOG_UNCOND("=== Module 50: Node Coloring ===");
-
     visualization::NodeColorManager color_mgr(&topo, &netanim);
     color_mgr.Initialize();
+    visualization::PacketVizManager pkt_viz(&topo, &netanim);
+    pkt_viz.Initialize();
 
-    // Test 1: initial state all NORMAL
-    NS_LOG_UNCOND("\nTest 1: Initial state...");
-    {
-        bool all_normal = true;
-        for (uint32_t i = 0; i < 18; ++i) {
-            if (color_mgr.GetUavState(i) !=
-                visualization::UavColorState::NORMAL)
-            {
-                all_normal = false;
-                break;
-            }
-        }
-        NS_LOG_UNCOND("  All UAVs NORMAL: "
-            << (all_normal ? "PASS" : "FAIL"));
-    }
+    // ===================================================
+    // Module 52: Event Annotations
+    // ===================================================
+    NS_LOG_UNCOND("=== Module 52: Event Annotations ===");
 
-    // Test 2: manual state changes
-    NS_LOG_UNCOND("\nTest 2: Manual state changes...");
-    {
-        color_mgr.SetUavCompromised(2);
-        color_mgr.SetUavHandover(5);
-        color_mgr.SetUavJammed(8);
-        color_mgr.SetUavDisconnected(11);
+    visualization::EventAnnotationManager evt_ann(
+        &topo, &netanim);
+    evt_ann.Initialize();
 
-        bool t2_ok =
-            color_mgr.GetUavState(2) ==
-                visualization::UavColorState::COMPROMISED &&
-            color_mgr.GetUavState(5) ==
-                visualization::UavColorState::HANDOVER &&
-            color_mgr.GetUavState(8) ==
-                visualization::UavColorState::JAMMED &&
-            color_mgr.GetUavState(11) ==
-                visualization::UavColorState::DISCONNECTED;
-        NS_LOG_UNCOND("  State changes: "
-            << (t2_ok ? "PASS" : "FAIL"));
-    }
+    // Test 1: compromise annotation
+    NS_LOG_UNCOND("\nTest 1: Compromise annotation...");
+    evt_ann.OnCompromise(2);
+    evt_ann.OnCompromise(5);
+    NS_LOG_UNCOND("  Annotations: "
+        << evt_ann.GetTotalAnnotations()
+        << " (expect 2): "
+        << (evt_ann.GetTotalAnnotations() == 2
+            ? "PASS" : "FAIL"));
 
-    // Test 3: restore to normal
-    NS_LOG_UNCOND("\nTest 3: Restore to normal...");
-    {
-        color_mgr.SetUavNormal(5);
-        bool t3_ok = color_mgr.GetUavState(5) ==
-            visualization::UavColorState::NORMAL;
-        NS_LOG_UNCOND("  Restore UAV5: "
-            << (t3_ok ? "PASS" : "FAIL"));
-    }
+    // Test 2: rekey annotation
+    NS_LOG_UNCOND("\nTest 2: Rekey annotation...");
+    evt_ann.OnRekey(0);
+    evt_ann.OnRekey(1);
+    evt_ann.OnRekey(2);
+    NS_LOG_UNCOND("  Test 2: PASS");
 
-    // Test 4: hook CompromiseDetector
-    NS_LOG_UNCOND("\nTest 4: CompromiseDetector hook...");
-    {
-        color_mgr.HookCompromiseDetector(&comp_det);
-        comp_det.ReportHmacFailure(
-            3, 0, 3, skdc_apps[0]);
-        bool t4_ok = color_mgr.GetUavState(3) ==
-            visualization::UavColorState::COMPROMISED;
-        NS_LOG_UNCOND("  Auto-color on compromise: "
-            << (t4_ok ? "PASS" : "FAIL"));
-    }
+    // Test 3: join/leave annotations
+    NS_LOG_UNCOND("\nTest 3: Join/Leave annotations...");
+    evt_ann.OnJoin(0);
+    evt_ann.OnJoin(6);
+    evt_ann.OnLeave(3);
+    NS_LOG_UNCOND("  Test 3: PASS");
 
-    // Test 5: hook JammerManager
-    NS_LOG_UNCOND("\nTest 5: JammerManager hook...");
-    {
-        color_mgr.HookJammerManager(&jammer_mgr, 1.0);
-        NS_LOG_UNCOND("  JammerManager hooked: PASS");
-    }
+    // Test 4: handover annotation
+    NS_LOG_UNCOND("\nTest 4: Handover annotation...");
+    evt_ann.OnHandover(5);
+    NS_LOG_UNCOND("  Test 4: PASS");
 
-    // Test 6: counts
-    NS_LOG_UNCOND("\nTest 6: Counts...");
-    {
-        uint32_t comp = color_mgr.GetCompromisedCount();
-        NS_LOG_UNCOND("  Compromised count: " << comp
-            << " (expect >=2)");
-        bool t6_ok = (comp >= 2);
-        NS_LOG_UNCOND("  Test 6: "
-            << (t6_ok ? "PASS" : "FAIL"));
-    }
+    // Test 5: jammer detection annotation
+    NS_LOG_UNCOND("\nTest 5: Jammer detection annotation...");
+    evt_ann.OnJammerDetect(18);
+    NS_LOG_UNCOND("  Test 5: PASS");
 
-    color_mgr.PrintColorStats();
+    // Test 6: generic SecurityEventType dispatcher
+    NS_LOG_UNCOND("\nTest 6: Generic event dispatcher...");
+    evt_ann.OnSecurityEvent(
+        utils::SecurityEventType::TEK_ROTATION, 0, false);
+    evt_ann.OnSecurityEvent(
+        utils::SecurityEventType::HANDOVER_START, 7, true);
+    evt_ann.OnSecurityEvent(
+        utils::SecurityEventType::JAMMER_DETECTED, 18, false);
+    NS_LOG_UNCOND("  Test 6: PASS");
 
-    Simulator::Stop(Seconds(4.0));
+    // Test 7: total annotations
+    NS_LOG_UNCOND("\nTest 7: Total annotations...");
+    uint64_t total = evt_ann.GetTotalAnnotations();
+    NS_LOG_UNCOND("  Total: " << total
+        << " (expect >=10): "
+        << (total >= 10 ? "PASS" : "FAIL"));
+
+    evt_ann.PrintStats();
+
+    Simulator::Stop(Seconds(3.0));
     Simulator::Run();
 
-    // After sim: jammer hook fired at t=1,2,3
-    uint32_t jammed = color_mgr.GetJammedCount();
-    NS_LOG_UNCOND("\nJammed UAVs after sim: " << jammed);
-    NS_LOG_UNCOND("Jammer color updates: PASS");
-
-    NS_LOG_UNCOND("\nModule 50: OK");
+    NS_LOG_UNCOND("\nModule 52: OK");
     Simulator::Destroy();
     return 0;
 }

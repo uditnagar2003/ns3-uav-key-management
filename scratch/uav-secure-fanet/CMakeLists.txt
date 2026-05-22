@@ -56,6 +56,8 @@ set(uav_sources
     visualization/uav-netanim.cc
     visualization/uav-pyviz.cc
     visualization/uav-node-color.cc
+    visualization/uav-packet-viz.cc
+    visualization/uav-event-annotations.cc
 )
 
 build_exec(
