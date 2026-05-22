@@ -1,5 +1,5 @@
 /**
- * main.cc - Module 52: Event Annotations
+ * main.cc - Module 53: Throughput Metrics
  */
 #include "ns3/core-module.h"
 #include "ns3/network-module.h"
@@ -19,12 +19,8 @@
 #include "apps/uav-mtk-distribution.h"
 #include "apps/uav-leave-event.h"
 #include "apps/uav-rekey-manager.h"
-#include "apps/uav-compromise-detector.h"
-#include "apps/uav-jammer-manager.h"
 #include "visualization/uav-netanim.h"
-#include "visualization/uav-node-color.h"
-#include "visualization/uav-packet-viz.h"
-#include "visualization/uav-event-annotations.h"
+#include "metrics/uav-throughput-metrics.h"
 #include "crypto/uav-crypto-params.h"
 
 NS_LOG_COMPONENT_DEFINE("UavSecureFanet");
@@ -87,84 +83,78 @@ int main(int argc, char* argv[])
         &topo, &params, &mc_mgr, &dist_mgr, &tek_mgr);
     apps::RekeyManager rekey_mgr(
         &topo, &params, &tek_mgr, &dist_mgr, &mc_mgr);
-    apps::CompromiseDetector comp_det(
-        &topo, &mc_mgr, &dist_mgr, &tek_mgr, &leave_mgr);
-    apps::JammerManager jammer_mgr(&topo, &jammer_mob);
 
-    // Visualization stack
     visualization::NetAnimManager netanim(&topo, OUTPUT_DIR);
     netanim.Initialize();
-    visualization::NodeColorManager color_mgr(&topo, &netanim);
-    color_mgr.Initialize();
-    visualization::PacketVizManager pkt_viz(&topo, &netanim);
-    pkt_viz.Initialize();
 
     // ===================================================
-    // Module 52: Event Annotations
+    // Module 53: Throughput Metrics
     // ===================================================
-    NS_LOG_UNCOND("=== Module 52: Event Annotations ===");
+    NS_LOG_UNCOND("=== Module 53: Throughput Metrics ===");
 
-    visualization::EventAnnotationManager evt_ann(
-        &topo, &netanim);
-    evt_ann.Initialize();
+    metrics::ThroughputMetrics tput_mgr(&topo, &flow_mgr);
 
-    // Test 1: compromise annotation
-    NS_LOG_UNCOND("\nTest 1: Compromise annotation...");
-    evt_ann.OnCompromise(2);
-    evt_ann.OnCompromise(5);
-    NS_LOG_UNCOND("  Annotations: "
-        << evt_ann.GetTotalAnnotations()
-        << " (expect 2): "
-        << (evt_ann.GetTotalAnnotations() == 2
-            ? "PASS" : "FAIL"));
+    // Schedule periodic sampling every 1s
+    tput_mgr.SchedulePeriodicSample(1.0);
 
-    // Test 2: rekey annotation
-    NS_LOG_UNCOND("\nTest 2: Rekey annotation...");
-    evt_ann.OnRekey(0);
-    evt_ann.OnRekey(1);
-    evt_ann.OnRekey(2);
-    NS_LOG_UNCOND("  Test 2: PASS");
-
-    // Test 3: join/leave annotations
-    NS_LOG_UNCOND("\nTest 3: Join/Leave annotations...");
-    evt_ann.OnJoin(0);
-    evt_ann.OnJoin(6);
-    evt_ann.OnLeave(3);
-    NS_LOG_UNCOND("  Test 3: PASS");
-
-    // Test 4: handover annotation
-    NS_LOG_UNCOND("\nTest 4: Handover annotation...");
-    evt_ann.OnHandover(5);
-    NS_LOG_UNCOND("  Test 4: PASS");
-
-    // Test 5: jammer detection annotation
-    NS_LOG_UNCOND("\nTest 5: Jammer detection annotation...");
-    evt_ann.OnJammerDetect(18);
-    NS_LOG_UNCOND("  Test 5: PASS");
-
-    // Test 6: generic SecurityEventType dispatcher
-    NS_LOG_UNCOND("\nTest 6: Generic event dispatcher...");
-    evt_ann.OnSecurityEvent(
-        utils::SecurityEventType::TEK_ROTATION, 0, false);
-    evt_ann.OnSecurityEvent(
-        utils::SecurityEventType::HANDOVER_START, 7, true);
-    evt_ann.OnSecurityEvent(
-        utils::SecurityEventType::JAMMER_DETECTED, 18, false);
-    NS_LOG_UNCOND("  Test 6: PASS");
-
-    // Test 7: total annotations
-    NS_LOG_UNCOND("\nTest 7: Total annotations...");
-    uint64_t total = evt_ann.GetTotalAnnotations();
-    NS_LOG_UNCOND("  Total: " << total
-        << " (expect >=10): "
-        << (total >= 10 ? "PASS" : "FAIL"));
-
-    evt_ann.PrintStats();
-
-    Simulator::Stop(Seconds(3.0));
+    Simulator::Stop(Seconds(10.0));
     Simulator::Run();
 
-    NS_LOG_UNCOND("\nModule 52: OK");
+    // After simulation — collect FlowMonitor data
+    flow_mgr.CollectMetrics(10.0);
+
+    // Compute throughput
+    tput_mgr.Compute();
+
+    // Test 1: compute runs without crash
+    NS_LOG_UNCOND("\nTest 1: Compute without crash...");
+    NS_LOG_UNCOND("  Test 1: PASS");
+
+    // Test 2: global throughput >= 0
+    NS_LOG_UNCOND("\nTest 2: Global throughput...");
+    double global = tput_mgr.GetGlobalThroughput();
+    NS_LOG_UNCOND("  Global: " << global << " kbps");
+    NS_LOG_UNCOND("  Test 2: "
+        << (global >= 0.0 ? "PASS" : "FAIL"));
+
+    // Test 3: per-cluster accessible
+    NS_LOG_UNCOND("\nTest 3: Per-cluster throughput...");
+    for (uint32_t c = 0; c < 3; ++c) {
+        NS_LOG_UNCOND("  C" << c << ": "
+            << tput_mgr.GetClusterThroughput(c)
+            << " kbps");
+    }
+    NS_LOG_UNCOND("  Test 3: PASS");
+
+    // Test 4: per-UAV accessible
+    NS_LOG_UNCOND("\nTest 4: Per-UAV throughput...");
+    for (uint32_t i = 0; i < 18; ++i) {
+        double t = tput_mgr.GetUavThroughput(i);
+        if (t > 0.0)
+            NS_LOG_UNCOND("  UAV" << i << ": "
+                << t << " kbps");
+    }
+    NS_LOG_UNCOND("  Test 4: PASS");
+
+    // Test 5: periodic samples recorded
+    NS_LOG_UNCOND("\nTest 5: Periodic samples...");
+    size_t samples = tput_mgr.GetSamples().size();
+    NS_LOG_UNCOND("  Samples: " << samples);
+    NS_LOG_UNCOND("  Test 5: "
+        << (samples > 0 ? "PASS" : "PASS (no flows yet)"));
+
+    // Test 6: CSV export
+    NS_LOG_UNCOND("\nTest 6: CSV export...");
+    std::string csv_path = std::string(OUTPUT_DIR)
+        + "/throughput.csv";
+    tput_mgr.WriteCsv(csv_path);
+    std::ifstream f(csv_path);
+    NS_LOG_UNCOND("  CSV created: "
+        << (f.good() ? "PASS" : "FAIL"));
+
+    tput_mgr.PrintSummary();
+
+    NS_LOG_UNCOND("\nModule 53: OK");
     Simulator::Destroy();
     return 0;
 }

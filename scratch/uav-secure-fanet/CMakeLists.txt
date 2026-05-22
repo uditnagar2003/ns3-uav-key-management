@@ -58,6 +58,7 @@ set(uav_sources
     visualization/uav-node-color.cc
     visualization/uav-packet-viz.cc
     visualization/uav-event-annotations.cc
+    metrics/uav-throughput-metrics.cc
 )
 
 build_exec(
