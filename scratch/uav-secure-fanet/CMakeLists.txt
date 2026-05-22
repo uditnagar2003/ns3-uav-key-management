@@ -55,6 +55,7 @@ set(uav_sources
     apps/uav-jammer-attack-handler.cc
     visualization/uav-netanim.cc
     visualization/uav-pyviz.cc
+    visualization/uav-node-color.cc
 )
 
 build_exec(

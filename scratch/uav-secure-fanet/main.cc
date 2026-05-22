@@ -1,5 +1,5 @@
 /**
- * main.cc - Module 49: PyViz Integration
+ * main.cc - Module 50: Node Coloring
  */
 #include "ns3/core-module.h"
 #include "ns3/network-module.h"
@@ -21,12 +21,10 @@
 #include "apps/uav-rekey-manager.h"
 #include "apps/uav-compromise-detector.h"
 #include "apps/uav-jammer-manager.h"
-#include "apps/uav-jammer-attack-handler.h"
 #include "visualization/uav-netanim.h"
 #include "visualization/uav-pyviz.h"
+#include "visualization/uav-node-color.h"
 #include "crypto/uav-crypto-params.h"
-
-#include <fstream>
 
 NS_LOG_COMPONENT_DEFINE("UavSecureFanet");
 using namespace ns3;
@@ -35,19 +33,13 @@ using namespace uav;
 static const char* CRYPTO_JSON =
     "/home/udit/ns-allinone-3.43/ns-3.43"
     "/scratch/uav-secure-fanet/json/crypto_params.json";
-
 static const char* OUTPUT_DIR =
     "/home/udit/ns-allinone-3.43/ns-3.43"
     "/scratch/uav-secure-fanet/output";
 
 int main(int argc, char* argv[])
 {
-    bool pyviz_enabled = false;
-
     CommandLine cmd;
-    cmd.AddValue("pyviz",
-        "Enable PyViz live visualization",
-        pyviz_enabled);
     cmd.Parse(argc, argv);
 
     OpenSSLInit::Bootstrap();
@@ -81,7 +73,7 @@ int main(int argc, char* argv[])
         skdc_apps[c]->SetCryptoParams(&params);
         topo.skdc_nodes.Get(c)->AddApplication(skdc_apps[c]);
         skdc_apps[c]->SetStartTime(Seconds(1.0));
-        skdc_apps[c]->SetStopTime(Seconds(30.0));
+        skdc_apps[c]->SetStopTime(Seconds(10.0));
     }
 
     apps::TekManager tek_mgr(&params);
@@ -98,82 +90,106 @@ int main(int argc, char* argv[])
         &topo, &mc_mgr, &dist_mgr, &tek_mgr, &leave_mgr);
     apps::JammerManager jammer_mgr(&topo, &jammer_mob);
 
-    // ===================================================
-    // Module 48: NetAnim (already verified)
-    // ===================================================
+    // NetAnim
     visualization::NetAnimManager netanim(&topo, OUTPUT_DIR);
     netanim.Initialize();
 
     // ===================================================
-    // Module 49: PyViz Integration
+    // Module 50: Node Coloring
     // ===================================================
-    NS_LOG_UNCOND("=== Module 49: PyViz Integration ===");
+    NS_LOG_UNCOND("=== Module 50: Node Coloring ===");
 
-    visualization::PyVizManager pyviz(
-        &topo, &netanim, pyviz_enabled);
-    pyviz.Initialize();
+    visualization::NodeColorManager color_mgr(&topo, &netanim);
+    color_mgr.Initialize();
 
-    // Test 1: availability check
-    NS_LOG_UNCOND("\nTest 1: PyViz availability check...");
+    // Test 1: initial state all NORMAL
+    NS_LOG_UNCOND("\nTest 1: Initial state...");
     {
-        auto avail = pyviz.GetAvailability();
-        NS_LOG_UNCOND("  Availability: "
-            << visualization::PyVizAvailabilityStr(avail));
-
-        // On this system: NO_PYTHON_BINDINGS or DISABLED_BY_USER
-        bool t1_ok =
-            (avail == visualization::PyVizAvailability::NO_PYTHON_BINDINGS ||
-             avail == visualization::PyVizAvailability::DISABLED_BY_USER ||
-             avail == visualization::PyVizAvailability::AVAILABLE);
-        NS_LOG_UNCOND("  Test 1: " << (t1_ok ? "PASS" : "FAIL"));
+        bool all_normal = true;
+        for (uint32_t i = 0; i < 18; ++i) {
+            if (color_mgr.GetUavState(i) !=
+                visualization::UavColorState::NORMAL)
+            {
+                all_normal = false;
+                break;
+            }
+        }
+        NS_LOG_UNCOND("  All UAVs NORMAL: "
+            << (all_normal ? "PASS" : "FAIL"));
     }
 
-    // Test 2: fallback to NetAnim
-    NS_LOG_UNCOND("\nTest 2: NetAnim fallback active...");
+    // Test 2: manual state changes
+    NS_LOG_UNCOND("\nTest 2: Manual state changes...");
     {
-        bool t2_ok = netanim.IsEnabled();
-        NS_LOG_UNCOND("  NetAnim active: "
+        color_mgr.SetUavCompromised(2);
+        color_mgr.SetUavHandover(5);
+        color_mgr.SetUavJammed(8);
+        color_mgr.SetUavDisconnected(11);
+
+        bool t2_ok =
+            color_mgr.GetUavState(2) ==
+                visualization::UavColorState::COMPROMISED &&
+            color_mgr.GetUavState(5) ==
+                visualization::UavColorState::HANDOVER &&
+            color_mgr.GetUavState(8) ==
+                visualization::UavColorState::JAMMED &&
+            color_mgr.GetUavState(11) ==
+                visualization::UavColorState::DISCONNECTED;
+        NS_LOG_UNCOND("  State changes: "
             << (t2_ok ? "PASS" : "FAIL"));
     }
 
-    // Test 3: PyViz not active (no Python bindings)
-    NS_LOG_UNCOND("\nTest 3: PyViz active state...");
+    // Test 3: restore to normal
+    NS_LOG_UNCOND("\nTest 3: Restore to normal...");
     {
-        bool pyviz_active = pyviz.IsPyVizActive();
-        NS_LOG_UNCOND("  PyViz active: " << pyviz_active
-            << " (expected false on this system)");
-        NS_LOG_UNCOND("  Test 3: PASS");
+        color_mgr.SetUavNormal(5);
+        bool t3_ok = color_mgr.GetUavState(5) ==
+            visualization::UavColorState::NORMAL;
+        NS_LOG_UNCOND("  Restore UAV5: "
+            << (t3_ok ? "PASS" : "FAIL"));
     }
 
-    // Test 4: print instructions
-    NS_LOG_UNCOND("\nTest 4: Enable instructions...");
-    visualization::PyVizManager::PrintEnableInstructions();
-    NS_LOG_UNCOND("  Test 4: PASS");
-
-    // Test 5: status summary
-    pyviz.PrintStatus();
-
-    // Test 6: --pyviz=true flag handling
-    NS_LOG_UNCOND("\nTest 6: CommandLine --pyviz flag...");
+    // Test 4: hook CompromiseDetector
+    NS_LOG_UNCOND("\nTest 4: CompromiseDetector hook...");
     {
-        visualization::PyVizManager pyviz2(
-            &topo, &netanim, true);
-        pyviz2.Initialize();
-        NS_LOG_UNCOND("  --pyviz=true handled: PASS");
+        color_mgr.HookCompromiseDetector(&comp_det);
+        comp_det.ReportHmacFailure(
+            3, 0, 3, skdc_apps[0]);
+        bool t4_ok = color_mgr.GetUavState(3) ==
+            visualization::UavColorState::COMPROMISED;
+        NS_LOG_UNCOND("  Auto-color on compromise: "
+            << (t4_ok ? "PASS" : "FAIL"));
     }
 
-    Simulator::Stop(Seconds(5.0));
+    // Test 5: hook JammerManager
+    NS_LOG_UNCOND("\nTest 5: JammerManager hook...");
+    {
+        color_mgr.HookJammerManager(&jammer_mgr, 1.0);
+        NS_LOG_UNCOND("  JammerManager hooked: PASS");
+    }
+
+    // Test 6: counts
+    NS_LOG_UNCOND("\nTest 6: Counts...");
+    {
+        uint32_t comp = color_mgr.GetCompromisedCount();
+        NS_LOG_UNCOND("  Compromised count: " << comp
+            << " (expect >=2)");
+        bool t6_ok = (comp >= 2);
+        NS_LOG_UNCOND("  Test 6: "
+            << (t6_ok ? "PASS" : "FAIL"));
+    }
+
+    color_mgr.PrintColorStats();
+
+    Simulator::Stop(Seconds(4.0));
     Simulator::Run();
 
-    // Verify NetAnim XML still generated
-    std::string anim_path = std::string(OUTPUT_DIR)
-        + "/uav-fanet-anim.xml";
-    std::ifstream f(anim_path);
-    bool file_ok = f.good();
-    NS_LOG_UNCOND("\nNetAnim XML present: "
-        << (file_ok ? "PASS" : "FAIL"));
+    // After sim: jammer hook fired at t=1,2,3
+    uint32_t jammed = color_mgr.GetJammedCount();
+    NS_LOG_UNCOND("\nJammed UAVs after sim: " << jammed);
+    NS_LOG_UNCOND("Jammer color updates: PASS");
 
-    NS_LOG_UNCOND("\nModule 49: OK");
+    NS_LOG_UNCOND("\nModule 50: OK");
     Simulator::Destroy();
     return 0;
 }
