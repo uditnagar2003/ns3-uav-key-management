@@ -59,6 +59,7 @@ set(uav_sources
     visualization/uav-packet-viz.cc
     visualization/uav-event-annotations.cc
     metrics/uav-throughput-metrics.cc
+    metrics/uav-delay-metrics.cc
 )
 
 build_exec(
