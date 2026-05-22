@@ -7,6 +7,7 @@
 #include "uav-log-channels.h"
 
 #include "ns3/yans-wifi-helper.h"
+#include "ns3/gauss-markov-mobility-model.h"
 #include "ns3/ssid.h"
 #include "ns3/olsr-helper.h"
 #include "ns3/ipv4-list-routing-helper.h"
@@ -291,10 +292,26 @@ void TopologyBuilder::ConfigureInitialPositions(
         }
     }
 
-    // GaussMarkov mobility will be applied by MobilityManager
-    // For now set ConstantPosition as placeholder
+    // Positions only — GaussMarkov installed by MobilityManager
+    // Installing ConstantPosition here would prevent GaussMarkov
+    // from being aggregated to these nodes later
     uav_mobility.SetMobilityModel(
-        "ns3::ConstantPositionMobilityModel");
+        "ns3::GaussMarkovMobilityModel",
+        "Bounds", BoxValue(Box(0.0,1500.0,0.0,1500.0,50.0,150.0)),
+        "TimeStep", TimeValue(Seconds(0.5)),
+        "Alpha", DoubleValue(0.3),
+        "MeanVelocity", StringValue(
+            "ns3::ConstantRandomVariable[Constant=20.0]"),
+        "MeanDirection", StringValue(
+            "ns3::UniformRandomVariable[Min=0|Max=6.283]"),
+        "MeanPitch", StringValue(
+            "ns3::ConstantRandomVariable[Constant=0.0]"),
+        "NormalVelocity", StringValue(
+            "ns3::NormalRandomVariable[Mean=0.0|Variance=8.0]"),
+        "NormalDirection", StringValue(
+            "ns3::NormalRandomVariable[Mean=0.0|Variance=0.3]"),
+        "NormalPitch", StringValue(
+            "ns3::NormalRandomVariable[Mean=0.0|Variance=0.02]"));
     uav_mobility.SetPositionAllocator(uav_pos);
     uav_mobility.Install(topo.uav_nodes);
 
