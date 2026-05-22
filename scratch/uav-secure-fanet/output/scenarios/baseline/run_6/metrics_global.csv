@@ -1,0 +1,16 @@
+metric,value
+sim_duration_s,300
+global_throughput_kbps,0.039256
+global_pdr,1
+global_avg_delay_ms,4.06005
+global_jitter_ms,0.878092
+total_tx,30
+total_rx,30
+total_lost,0
+routing_overhead_ratio,0.994714
+ctrl_bytes_per_sec,828
+avg_rekey_latency_ms,0
+total_rekeys,903
+global_avg_sinr_db,0.165041
+global_min_sinr_db,-9.20131
+jammed_uav_count,18

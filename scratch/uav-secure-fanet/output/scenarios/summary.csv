@@ -1,0 +1,6 @@
+scenario,runs_passed,total_runs
+baseline,10,10
+denied_environment,10,10
+scalability_seed0,3,3
+scalability_seed50,3,3
+scalability_seed100,3,3

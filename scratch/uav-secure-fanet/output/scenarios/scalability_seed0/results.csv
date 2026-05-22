@@ -1,0 +1,4 @@
+scenario,run,seed,rekeys,handovers,pdr,throughput_kbps,sinr_db
+scalability_seed0,1,42,903,439,1.0000,kbps,dB
+scalability_seed0,2,43,903,372,1.0000,kbps,dB
+scalability_seed0,3,44,898,367,1.0000,kbps,dB

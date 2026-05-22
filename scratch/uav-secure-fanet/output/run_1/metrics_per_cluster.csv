@@ -1,0 +1,4 @@
+cluster_id,flows,throughput_kbps,avg_pdr,avg_delay_ms,tx_pkts,rx_pkts,lost_pkts
+0,3,0.039,1.000,4.195,30,30,0
+1,0,0.000,0.000,0.000,0,0,0
+2,0,0.000,0.000,0.000,0,0,0
