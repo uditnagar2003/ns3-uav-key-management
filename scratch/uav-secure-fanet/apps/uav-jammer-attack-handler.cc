@@ -18,9 +18,6 @@ using namespace ns3;
 namespace uav {
 namespace apps {
 
-// ---------------------------------------------------------------------------
-// Construction
-// ---------------------------------------------------------------------------
 JammerAttackHandler::JammerAttackHandler(
     const routing::TopologyResult*             topo,
     JammerManager*                             jammer_mgr,
@@ -37,12 +34,9 @@ JammerAttackHandler::JammerAttackHandler(
 {
     UAV_LOG_INFO(uav::log::channels::JAMMER,
         "JammerAttackHandler: initialized"
-        " rekey_threshold=" << m_rekey_threshold);
+        " threshold=" << m_rekey_threshold);
 }
 
-// ---------------------------------------------------------------------------
-// HandleJammerEvent
-// ---------------------------------------------------------------------------
 void JammerAttackHandler::HandleJammerEvent(
     const JammerEvent& ev)
 {
@@ -51,14 +45,13 @@ void JammerAttackHandler::HandleJammerEvent(
     UAV_LOG_INFO(uav::log::channels::JAMMER,
         "JammerAttackHandler: t=" << now
         << " affected=" << ev.affected_uavs
-        << " min_sinr=" << ev.min_sinr_db
-        << "dB threshold_hit=" << ev.threshold_hit);
+        << " min_sinr=" << ev.min_sinr_db << "dB"
+        << " threshold_hit=" << ev.threshold_hit);
 
-    // Per-cluster accounting
     std::array<utils::u32, 3> jammed_per_cluster  = {0, 0, 0};
     std::array<utils::u32, 3> revoked_per_cluster = {0, 0, 0};
 
-    // Step 1: check every UAV against JammerManager
+    // Step 1: check every UAV
     for (utils::u32 uav_id = 0; uav_id < 18; ++uav_id) {
         if (!m_jammer_mgr->IsJammed(uav_id)) continue;
 
@@ -66,7 +59,7 @@ void JammerAttackHandler::HandleJammerEvent(
         utils::u32 idx     = UavToIndex(uav_id);
         ++jammed_per_cluster[cluster];
 
-        // Step 2: if also compromised → revoke
+        // Step 2: revoke if also compromised
         if (m_comp_det && m_skdc_apps &&
             !m_comp_det->IsRevoked(uav_id) &&
             m_jammer_mgr->IsCompromised(uav_id))
@@ -120,17 +113,15 @@ void JammerAttackHandler::HandleJammerEvent(
                 << " >= " << m_rekey_threshold
                 << " → emergency rekey");
 
-            bool ok = m_rekey_mgr->ProcessRekey(
+            bool ok = m_rekey_mgr->TriggerRekey(
                 c,
-                RekeyTrigger::MANUAL,
-                0xFFFFFFFF,
+                RekeyReason::COMPROMISE,
                 (*m_skdc_apps)[c].operator->());
 
             aev.rekey_triggered = ok;
             if (ok) ++m_rekeys_triggered;
         }
 
-        // Record if anything happened this cluster
         if (aev.jammed_count > 0 || aev.rekey_triggered) {
             ++m_total_events;
             m_history.push_back(aev);
@@ -139,19 +130,14 @@ void JammerAttackHandler::HandleJammerEvent(
     }
 }
 
-// ---------------------------------------------------------------------------
-// SchedulePeriodicHandling
-// ---------------------------------------------------------------------------
 void JammerAttackHandler::SchedulePeriodicHandling(
     double interval_s)
 {
     if (interval_s <= 0.0) return;
     m_periodic_interval = interval_s;
-
     Simulator::Schedule(
         Seconds(interval_s),
         &JammerAttackHandler::PeriodicCallback, this);
-
     UAV_LOG_INFO(uav::log::channels::JAMMER,
         "JammerAttackHandler: periodic every "
         << interval_s << "s");
@@ -168,15 +154,12 @@ void JammerAttackHandler::PeriodicCallback()
         &JammerAttackHandler::PeriodicCallback, this);
 }
 
-// ---------------------------------------------------------------------------
-// Stats
-// ---------------------------------------------------------------------------
 void JammerAttackHandler::PrintStats() const
 {
     std::cout << "\n=== JammerAttackHandler Stats ===\n";
-    std::cout << "  Attack events:    " << m_total_events     << "\n";
-    std::cout << "  Rekeys triggered: " << m_rekeys_triggered << "\n";
-    std::cout << "  Revocations:      " << m_total_revocations<< "\n";
+    std::cout << "  Attack events:    " << m_total_events      << "\n";
+    std::cout << "  Rekeys triggered: " << m_rekeys_triggered  << "\n";
+    std::cout << "  Revocations:      " << m_total_revocations << "\n";
     for (const auto& ev : m_history) {
         std::cout << "    t=" << ev.time_s
             << "s C" << ev.cluster_id

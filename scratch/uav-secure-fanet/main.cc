@@ -83,7 +83,7 @@ int main(int argc, char* argv[])
         &topo, &params, &mc_mgr, &dist_mgr, &tek_mgr);
 
     apps::RekeyManager rekey_mgr(
-        &topo, &params, &mc_mgr, &dist_mgr, &tek_mgr);
+        &topo, &params, &tek_mgr, &dist_mgr, &mc_mgr);
 
     apps::CompromiseDetector comp_det(
         &topo, &mc_mgr, &dist_mgr, &tek_mgr, &leave_mgr);
@@ -161,9 +161,6 @@ int main(int argc, char* argv[])
     // ---------------------------------------------------
     NS_LOG_UNCOND("\nTest 3: Compromised UAV revocation...");
     {
-        uint64_t revoke_before =
-            attack_handler.GetTotalRevocations();
-
         apps::JammerEvent ev = jammer_mgr.Scan();
         attack_handler.HandleJammerEvent(ev);
 
