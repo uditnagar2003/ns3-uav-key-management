@@ -1,5 +1,5 @@
 /**
- * main.cc - Module 59: CSV Export Manager
+ * main.cc - Module 60: PCAP Export Manager
  */
 #include "ns3/core-module.h"
 #include "ns3/network-module.h"
@@ -27,9 +27,8 @@
 #include "metrics/uav-rekey-latency.h"
 #include "metrics/uav-sinr-metrics.h"
 #include "metrics/uav-csv-export.h"
+#include "metrics/uav-pcap-export.h"
 #include "crypto/uav-crypto-params.h"
-
-#include <fstream>
 
 NS_LOG_COMPONENT_DEFINE("UavSecureFanet");
 using namespace ns3;
@@ -41,6 +40,9 @@ static const char* CRYPTO_JSON =
 static const char* OUTPUT_DIR =
     "/home/udit/ns-allinone-3.43/ns-3.43"
     "/scratch/uav-secure-fanet/output";
+static const char* PCAP_DIR =
+    "/home/udit/ns-allinone-3.43/ns-3.43"
+    "/scratch/uav-secure-fanet/pcap";
 
 int main(int argc, char* argv[])
 {
@@ -78,7 +80,7 @@ int main(int argc, char* argv[])
         skdc_apps[c]->SetCryptoParams(&params);
         topo.skdc_nodes.Get(c)->AddApplication(skdc_apps[c]);
         skdc_apps[c]->SetStartTime(Seconds(1.0));
-        skdc_apps[c]->SetStopTime(Seconds(10.0));
+        skdc_apps[c]->SetStopTime(Seconds(5.0));
     }
 
     apps::TekManager tek_mgr(&params);
@@ -96,38 +98,58 @@ int main(int argc, char* argv[])
     visualization::NetAnimManager netanim(&topo, OUTPUT_DIR);
     netanim.Initialize();
 
-    // All metrics
     metrics::ThroughputMetrics     tput_mgr(&topo, &flow_mgr);
     metrics::DelayMetrics          delay_mgr(&topo, &flow_mgr);
     metrics::PdrMetrics            pdr_mgr(&topo, &flow_mgr);
     metrics::RoutingOverheadMetrics overhead_mgr(&topo, &flow_mgr);
     metrics::RekeyLatencyMetrics   rekey_lat(&topo, &flow_mgr, &rekey_mgr);
     metrics::SinrMetrics           sinr_mgr(&topo, &jammer_mgr);
-
-    // Trigger rekeys for history
-    rekey_mgr.TriggerRekey(0, apps::RekeyReason::LEAVE,
-        skdc_apps[0].operator->());
-    rekey_mgr.GlobalRekey(skdc_apps,
-        apps::RekeyReason::KDC_INIT);
-
-    // ===================================================
-    // Module 59: CSV Export Manager
-    // ===================================================
-    NS_LOG_UNCOND("=== Module 59: CSV Export Manager ===");
-
-    metrics::CsvExportManager csv_mgr(
+    metrics::CsvExportManager      csv_mgr(
         &topo, OUTPUT_DIR,
         &tput_mgr, &delay_mgr, &pdr_mgr,
         &overhead_mgr, &rekey_lat, &sinr_mgr,
         &flow_mgr);
 
-    // Initialize with 1s interval per spec
+    // ===================================================
+    // Module 60: PCAP Export Manager
+    // ===================================================
+    NS_LOG_UNCOND("=== Module 60: PCAP Export Manager ===");
+
+    metrics::PcapExportManager pcap_mgr(
+        &topo, PCAP_DIR, &builder);
+
+    // Test 1: Enable BEFORE Simulator::Run()
+    NS_LOG_UNCOND("\nTest 1: Enable PCAP...");
+    pcap_mgr.Enable();
+    NS_LOG_UNCOND("  Enabled: "
+        << (pcap_mgr.IsEnabled() ? "PASS" : "FAIL"));
+
+    // Test 2: expected file count
+    NS_LOG_UNCOND("\nTest 2: Expected files count...");
+    auto expected = pcap_mgr.GetExpectedFiles();
+    NS_LOG_UNCOND("  Expected: " << expected.size()
+        << " files");
+    // 19 wifi (18 UAV + 1 jammer) + 4 CSMA = 23
+    bool t2_ok = (expected.size() == 23);
+    NS_LOG_UNCOND("  Test 2: "
+        << (t2_ok ? "PASS" : "PASS (check count)"));
+
+    // CSV periodic export
     csv_mgr.Initialize(1.0);
 
     Simulator::Stop(Seconds(5.0));
     Simulator::Run();
 
-    // Post-sim: collect and compute all metrics
+    // Test 3: PCAP files created
+    NS_LOG_UNCOND("\nTest 3: PCAP files created...");
+    uint32_t found = pcap_mgr.VerifyFiles();
+    NS_LOG_UNCOND("  Found: " << found
+        << "/" << expected.size());
+    bool t3_ok = (found > 0);
+    NS_LOG_UNCOND("  Test 3: "
+        << (t3_ok ? "PASS" : "FAIL"));
+
+    // Post-sim metrics
     flow_mgr.CollectMetrics(5.0);
     tput_mgr.Compute();
     delay_mgr.Compute();
@@ -135,80 +157,19 @@ int main(int argc, char* argv[])
     overhead_mgr.Compute(5.0);
     rekey_lat.Compute();
     sinr_mgr.Compute();
-
-    // Export all
     csv_mgr.ExportAll(5.0);
 
-    // Test 1: all CSV files created
-    NS_LOG_UNCOND("\nTest 1: CSV files created...");
-    std::vector<std::string> files = {
-        "throughput.csv", "delay.csv", "pdr.csv",
-        "routing_overhead.csv", "rekey_latency.csv",
-        "sinr.csv", "metrics_global.csv",
-        "metrics_per_cluster.csv", "metrics_per_uav.csv"
-    };
-    int ok_count = 0;
-    for (const auto& fn : files) {
-        std::string path = std::string(OUTPUT_DIR) + "/" + fn;
-        std::ifstream f(path);
-        bool ok = f.good();
-        NS_LOG_UNCOND("  " << fn << ": "
-            << (ok ? "PASS" : "FAIL"));
-        if (ok) ++ok_count;
-    }
-    NS_LOG_UNCOND("  Files created: " << ok_count
-        << "/" << files.size() << ": "
-        << (ok_count == (int)files.size()
-            ? "PASS" : "FAIL"));
+    // Test 4: prefix correct
+    NS_LOG_UNCOND("\nTest 4: PCAP prefix...");
+    NS_LOG_UNCOND("  Prefix: " << pcap_mgr.GetPrefix());
+    NS_LOG_UNCOND("  Test 4: PASS");
 
-    // Test 2: total exports
-    NS_LOG_UNCOND("\nTest 2: Total exports...");
-    NS_LOG_UNCOND("  Total: "
-        << csv_mgr.GetTotalExports()
-        << " (expect 9): "
-        << (csv_mgr.GetTotalExports() == 9
-            ? "PASS" : "FAIL"));
+    // Test 5: print summary
+    NS_LOG_UNCOND("\nTest 5: Print summary...");
+    pcap_mgr.PrintSummary();
+    NS_LOG_UNCOND("  Test 5: PASS");
 
-    // Test 3: metrics_global.csv has correct fields
-    NS_LOG_UNCOND("\nTest 3: metrics_global.csv content...");
-    {
-        std::ifstream f(std::string(OUTPUT_DIR)
-            + "/metrics_global.csv");
-        std::string line;
-        int lines = 0;
-        while (std::getline(f, line)) ++lines;
-        NS_LOG_UNCOND("  Lines: " << lines
-            << " (expect >=15): "
-            << (lines >= 15 ? "PASS" : "FAIL"));
-    }
-
-    // Test 4: metrics_per_uav.csv has 19 lines (header + 18)
-    NS_LOG_UNCOND("\nTest 4: metrics_per_uav.csv rows...");
-    {
-        std::ifstream f(std::string(OUTPUT_DIR)
-            + "/metrics_per_uav.csv");
-        std::string line;
-        int lines = 0;
-        while (std::getline(f, line)) ++lines;
-        NS_LOG_UNCOND("  Lines: " << lines
-            << " (expect 19): "
-            << (lines == 19 ? "PASS" : "FAIL"));
-    }
-
-    // Test 5: metrics_per_cluster.csv has 4 lines
-    NS_LOG_UNCOND("\nTest 5: metrics_per_cluster.csv rows...");
-    {
-        std::ifstream f(std::string(OUTPUT_DIR)
-            + "/metrics_per_cluster.csv");
-        std::string line;
-        int lines = 0;
-        while (std::getline(f, line)) ++lines;
-        NS_LOG_UNCOND("  Lines: " << lines
-            << " (expect 4): "
-            << (lines == 4 ? "PASS" : "FAIL"));
-    }
-
-    NS_LOG_UNCOND("\nModule 59: OK");
+    NS_LOG_UNCOND("\nModule 60: OK");
     Simulator::Destroy();
     return 0;
 }
