@@ -53,6 +53,8 @@ set(uav_sources
     apps/uav-compromise-detector.cc
     apps/uav-rekey-manager.cc
     apps/uav-jammer-attack-handler.cc
+    visualization/uav-netanim.cc
+    visualization/uav-pyviz.cc
 )
 
 build_exec(
@@ -60,6 +62,7 @@ build_exec(
     EXECNAME_PREFIX scratch_uav-secure-fanet_
     SOURCE_FILES "${uav_sources}"
     LIBRARIES_TO_LINK
+        ${libnetanim}
         "${ns3-libs}"
         "${ns3-contrib-libs}"
         OpenSSL::SSL
