@@ -1,0 +1,63 @@
+============================================
+ UAV Secure FANET — Batch Report
+ Sat May 23 06:02:41 UTC 2026
+============================================
+
+Configuration:
+  Duration:  300s
+  Runs/sc:   10
+  Seed base: 42
+  NS3 root:  /home/udit/ns-allinone-3.43/ns-3.43
+
+Scenario Results:
+scenario,runs_passed,total_runs
+baseline,10,10
+denied_environment,10,10
+scalability_seed0,3,3
+scalability_seed50,3,3
+scalability_seed100,3,3
+
+Global Metrics (last run):
+metric,value
+sim_duration_s,300
+global_throughput_kbps,0.039256
+global_pdr,1
+global_avg_delay_ms,4.10012
+global_jitter_ms,1.03217
+total_tx,30
+total_rx,30
+total_lost,0
+routing_overhead_ratio,0.994714
+ctrl_bytes_per_sec,828
+avg_rekey_latency_ms,0
+total_rekeys,888
+global_avg_sinr_db,-1.53455
+global_min_sinr_db,-16.2688
+jammed_uav_count,18
+
+Graphs Generated:
+cluster_pdr.png
+cluster_throughput.png
+delay_vs_uav.png
+drop_prob_vs_uav.png
+global_metrics_bar.png
+pdr_vs_uav.png
+rekey_latency_hist.png
+rekey_per_cluster.png
+routing_overhead.png
+scenario_handovers.png
+scenario_rekeys.png
+sinr_cdf.png
+sinr_distribution.png
+sinr_vs_uav.png
+throughput_vs_uav.png
+
+Output Files:
+  CSV:     /home/udit/ns-allinone-3.43/ns-3.43/scratch/uav-secure-fanet/output/
+  PCAP:    /home/udit/ns-allinone-3.43/ns-3.43/scratch/uav-secure-fanet/pcap/
+  NetAnim: /home/udit/ns-allinone-3.43/ns-3.43/scratch/uav-secure-fanet/output/uav-fanet-anim.xml
+  Graphs:  /home/udit/ns-allinone-3.43/ns-3.43/scratch/uav-secure-fanet/graphs/
+  Log:     /home/udit/ns-allinone-3.43/ns-3.43/scratch/uav-secure-fanet/logs/batch_20260523_055910.log
+
+Total wall time: 211s
+============================================
