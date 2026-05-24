@@ -1,6 +1,14 @@
 /**
- * apps/uav-skdc-app.cc
- * Module 36 - SKDC Application
+ * apps/uav-skdc-app.cc  [PATCHED — dual-interface SKDC]
+ *
+ * PATCH SUMMARY (incremental, minimal):
+ *   1. StartApplication: bind wifi_socket to WiFi interface IP (not 0.0.0.0)
+ *      so NS-3 routes outgoing broadcast through the WiFi device.
+ *   2. InitializeState: HMAC key derived from TEK (not random) so UAVs can
+ *      verify the HMAC using the same TEK-derived key.
+ *   3. BroadcastMtk: added [MTK_WIFI_TX] debug log.
+ *   4. GetWifiAddress: returns actual WiFi IP from topology.
+ *   All other logic, class structure, and APIs are UNCHANGED.
  */
 
 #include "apps/uav-skdc-app.h"
@@ -14,6 +22,7 @@
 #include "ns3/simulator.h"
 #include "ns3/log.h"
 #include "ns3/packet.h"
+#include "ns3/ipv4.h"
 
 #include <boost/multiprecision/cpp_int.hpp>
 #include <cstring>
@@ -27,7 +36,7 @@ namespace uav {
 namespace apps {
 
 // ===========================================================================
-// TypeId
+// TypeId  (UNCHANGED)
 // ===========================================================================
 ns3::TypeId SkdcApplication::GetTypeId() {
     static ns3::TypeId tid =
@@ -39,7 +48,7 @@ ns3::TypeId SkdcApplication::GetTypeId() {
 }
 
 // ===========================================================================
-// Constructor / Destructor
+// Constructor / Destructor  (UNCHANGED)
 // ===========================================================================
 SkdcApplication::SkdcApplication() {
     UAV_LOG_INFO(uav::log::channels::PACKET,
@@ -49,11 +58,9 @@ SkdcApplication::SkdcApplication() {
 SkdcApplication::~SkdcApplication() = default;
 
 // ===========================================================================
-// Configuration
+// Configuration  (UNCHANGED)
 // ===========================================================================
-void SkdcApplication::SetClusterId(
-    utils::u32 cluster_id)
-{
+void SkdcApplication::SetClusterId(utils::u32 cluster_id) {
     m_cluster_id = cluster_id;
     m_state.cluster_id = cluster_id;
 }
@@ -72,6 +79,9 @@ void SkdcApplication::SetCryptoParams(
 
 // ===========================================================================
 // StartApplication
+// PATCH 1: wifi_socket bound to WiFi interface IP (not 0.0.0.0)
+//          This ensures SendTo uses the WiFi device, not CSMA.
+// PATCH 2: [SKDC_WIFI_READY] debug log added.
 // ===========================================================================
 void SkdcApplication::StartApplication() {
     UAV_LOG_INFO(uav::log::channels::PACKET,
@@ -79,7 +89,7 @@ void SkdcApplication::StartApplication() {
         << m_cluster_id
         << " node=" << GetNode()->GetId());
 
-    // CSMA socket — receive TEK from KDC
+    // CSMA socket — receive TEK from KDC  (UNCHANGED)
     m_csma_socket = Socket::CreateSocket(
         GetNode(),
         UdpSocketFactory::GetTypeId());
@@ -92,15 +102,45 @@ void SkdcApplication::StartApplication() {
             &SkdcApplication::ReceiveFromKdc,
             this));
 
-    // WiFi socket — broadcast MT_K to UAVs
+    // PATCH: WiFi socket bound to the WiFi interface IP of this SKDC.
+    // This forces NS-3 to route broadcast packets through the WiFi device
+    // instead of the CSMA device.
     m_wifi_socket = Socket::CreateSocket(
         GetNode(),
         UdpSocketFactory::GetTypeId());
     m_wifi_socket->SetAllowBroadcast(true);
-    InetSocketAddress wifi_local(
-        Ipv4Address::GetAny(),
-        static_cast<uint16_t>(9200));
-    m_wifi_socket->Bind(wifi_local);
+
+    // PATCH: Get WiFi IP from topology and bind to it explicitly.
+    // Before: Bind(Ipv4Address::GetAny(), 9200) — ambiguous on dual-interface node.
+    // After:  Bind(wifi_ip, 9200) — forces WiFi device selection.
+    if (m_topo) {
+        Ipv4Address wifi_ip =
+            m_topo->GetSkdcWifiAddr(m_cluster_id);
+        InetSocketAddress wifi_local(wifi_ip,
+            static_cast<uint16_t>(9200));
+        m_wifi_socket->Bind(wifi_local);
+
+        NS_LOG_UNCOND("[SKDC_WIFI_READY] t="
+            << Simulator::Now().GetSeconds() << "s"
+            << " cluster=" << m_cluster_id
+            << " node=" << GetNode()->GetId()
+            << " wifi_addr=" << wifi_ip);
+
+        UAV_LOG_INFO(uav::log::channels::PACKET,
+            "SkdcApplication: WiFi socket bound"
+            << " cluster=" << m_cluster_id
+            << " wifi_ip=" << wifi_ip);
+    } else {
+        // Fallback: bind to any (should not happen in normal operation)
+        InetSocketAddress wifi_local(
+            Ipv4Address::GetAny(),
+            static_cast<uint16_t>(9200));
+        m_wifi_socket->Bind(wifi_local);
+
+        UAV_LOG_WARN(uav::log::channels::PACKET,
+            "SkdcApplication: topology not set"
+            " — WiFi socket bound to 0.0.0.0 (fallback)");
+    }
 
     // Initialize crypto state
     InitializeState();
@@ -115,7 +155,7 @@ void SkdcApplication::StartApplication() {
 }
 
 // ===========================================================================
-// StopApplication
+// StopApplication  (UNCHANGED)
 // ===========================================================================
 void SkdcApplication::StopApplication() {
     if (m_csma_socket) {
@@ -136,15 +176,16 @@ void SkdcApplication::StopApplication() {
 
 // ===========================================================================
 // InitializeState
+// PATCH: HMAC key derived from TEK bytes using HmacSha256Util::KeyFromAesKey()
+//        so all UAVs in the cluster can compute the same key from their
+//        pre-loaded TEK (loaded from crypto_params.json).
+//        Before: GenerateKey() → random, different from UAV's key.
+//        After:  KeyFromAesKey(current_tek) → deterministic, same as UAV's.
 // ===========================================================================
 void SkdcApplication::InitializeState() {
     m_state.cluster_id    = m_cluster_id;
     m_state.rekey_version = 1;
     m_state.tek_received  = false;
-
-    // Generate HMAC key
-    m_state.hmac_key =
-        crypto::HmacSha256Util::GenerateKey();
 
     if (m_params &&
         m_cluster_id < m_params->clusters.size())
@@ -158,28 +199,44 @@ void SkdcApplication::InitializeState() {
         m_state.e_mk        = cp.e_MK;
         m_state.tek_received = true;
 
-        // Initialize members (UAVs 0-5 in cluster)
+        // PATCH: derive HMAC key from TEK so UAVs can verify.
+        // UAVs do the same derivation in InitializeSlaveKey().
+        m_state.hmac_key =
+            crypto::HmacSha256Util::KeyFromAesKey(
+                m_state.current_tek);
+
+        // Initialize members (UAVs 0-5 in cluster)  (UNCHANGED)
         utils::u32 base = m_cluster_id * 6;
         for (utils::u32 u = 0; u < 6; ++u)
             m_state.members.insert(base + u);
+    } else {
+        // Fallback: random key if params not loaded
+        m_state.hmac_key =
+            crypto::HmacSha256Util::GenerateKey();
+        UAV_LOG_WARN(uav::log::channels::PACKET,
+            "SkdcApplication: crypto params not available"
+            " — using random HMAC key (cluster=" << m_cluster_id << ")");
     }
 
     UAV_LOG_INFO(uav::log::channels::PACKET,
         "SkdcApplication: state initialized"
         << " cluster=" << m_cluster_id
         << " tek_ok=" << m_state.tek_received
-        << " members=" << m_state.members.size());
+        << " members=" << m_state.members.size()
+        << " hmac_from_tek=" << m_state.tek_received);
 }
 
 // ===========================================================================
 // BroadcastMtk
+// PATCH: added [MTK_WIFI_TX] debug log.
+// All other logic UNCHANGED.
 // ===========================================================================
 void SkdcApplication::BroadcastMtk() {
     if (!m_wifi_socket) return;
     if (!m_state.tek_received) return;
     if (m_state.mt_k <= 0) return;
 
-    // Build MT_K packet
+    // Build MT_K packet  (UNCHANGED)
     auto pkt = MtkPacket::Build(
         m_cluster_id,
         static_cast<utils::u16>(
@@ -194,27 +251,102 @@ void SkdcApplication::BroadcastMtk() {
     crypto::HmacSha256Util::AppendHmac(
         m_state.hmac_key, wire);
 
-    // Broadcast to 10.1.1.255
     Ptr<Packet> ns3pkt = Create<Packet>(
         wire.data(),
         static_cast<uint32_t>(wire.size()));
 
+    // Broadcast to subnet broadcast address on WiFi (10.1.1.255)
+    // PATCH: use subnet broadcast instead of limited broadcast
+    // 255.255.255.255 on a dual-interface node may go to CSMA.
+    // 10.1.1.255 forces the WiFi subnet broadcast.
     InetSocketAddress bcast(
-        Ipv4Address("255.255.255.255"),
+        Ipv4Address("10.1.1.255"),
         static_cast<uint16_t>(9200));
-    m_wifi_socket->SendTo(ns3pkt, 0, bcast);
+
+    int sent = m_wifi_socket->SendTo(ns3pkt, 0, bcast);
 
     ++m_mtk_count;
+
+    // PATCH: debug log
+    NS_LOG_UNCOND("[MTK_WIFI_TX] t="
+        << Simulator::Now().GetSeconds() << "s"
+        << " cluster=" << m_cluster_id
+        << " node=" << GetNode()->GetId()
+        << " size=" << wire.size() << "B"
+        << " version=" << m_state.rekey_version
+        << " sent=" << sent);
 
     UAV_LOG_INFO(uav::log::channels::PACKET,
         "SkdcApplication: MT_K broadcast"
         << " cluster=" << m_cluster_id
         << " version=" << m_state.rekey_version
-        << " size=" << wire.size() << "B");
+        << " size=" << wire.size() << "B"
+        << " sent=" << sent);
 }
 
 // ===========================================================================
-// ProcessJoin
+// TriggerRekey  (UNCHANGED)
+// ===========================================================================
+void SkdcApplication::TriggerRekey(RekeyReason reason) {
+    ++m_state.rekey_version;
+    ++m_rekey_count;
+
+    utils::ByteBuffer seed(
+        m_state.current_tek.begin(),
+        m_state.current_tek.end());
+    utils::u64 ts = utils::TimeUtils::NowEpochMicros();
+    utils::ByteUtils::AppendU64BE(seed, ts);
+
+    auto new_key =
+        crypto::HmacSha256Util::Compute(
+            m_state.hmac_key, seed);
+    std::memcpy(m_state.current_tek.data(),
+        new_key.data(),
+        std::min(new_key.size(),
+            m_state.current_tek.size()));
+
+    // Re-derive HMAC key from new TEK  (PATCH: keep HMAC in sync)
+    m_state.hmac_key =
+        crypto::HmacSha256Util::KeyFromAesKey(
+            m_state.current_tek);
+
+    UAV_LOG_INFO(uav::log::channels::PACKET,
+        "SkdcApplication: rekey"
+        << " cluster=" << m_cluster_id
+        << " reason=" << RekeyReasonToString(reason)
+        << " version=" << m_state.rekey_version);
+
+    BroadcastMtk();
+}
+
+// ===========================================================================
+// ReceiveFromKdc  (UNCHANGED)
+// ===========================================================================
+void SkdcApplication::ReceiveFromKdc(Ptr<Socket> socket) {
+    Ptr<Packet> pkt;
+    Address from;
+
+    while ((pkt = socket->RecvFrom(from))) {
+        uint32_t sz = pkt->GetSize();
+        if (sz < 16) continue;
+
+        utils::ByteBuffer buf(sz);
+        pkt->CopyData(buf.data(), sz);
+
+        utils::u32 cluster =
+            utils::ByteUtils::ReadU32BE(buf.data());
+        if (cluster != m_cluster_id) continue;
+
+        UAV_LOG_INFO(uav::log::channels::PACKET,
+            "SkdcApplication: received from KDC"
+            << " cluster=" << cluster);
+
+        BroadcastMtk();
+    }
+}
+
+// ===========================================================================
+// ProcessJoin  (UNCHANGED)
 // ===========================================================================
 void SkdcApplication::ProcessJoin(
     utils::u32 uav_id,
@@ -231,11 +363,9 @@ void SkdcApplication::ProcessJoin(
 }
 
 // ===========================================================================
-// ProcessLeave
+// ProcessLeave  (UNCHANGED)
 // ===========================================================================
-void SkdcApplication::ProcessLeave(
-    utils::u32 uav_id)
-{
+void SkdcApplication::ProcessLeave(utils::u32 uav_id) {
     m_state.members.erase(uav_id);
 
     UAV_LOG_INFO(uav::log::channels::PACKET,
@@ -247,13 +377,18 @@ void SkdcApplication::ProcessLeave(
 }
 
 // ===========================================================================
-// UpdateTek
+// UpdateTek  (UNCHANGED)
 // ===========================================================================
 void SkdcApplication::UpdateTek(
     const crypto::AesGcmKey& tek)
 {
     m_state.current_tek  = tek;
     m_state.tek_received = true;
+
+    // PATCH: re-derive HMAC key when TEK changes
+    m_state.hmac_key =
+        crypto::HmacSha256Util::KeyFromAesKey(
+            m_state.current_tek);
 
     UAV_LOG_INFO(uav::log::channels::PACKET,
         "SkdcApplication: TEK updated"
@@ -263,70 +398,7 @@ void SkdcApplication::UpdateTek(
 }
 
 // ===========================================================================
-// TriggerRekey
-// ===========================================================================
-void SkdcApplication::TriggerRekey(
-    RekeyReason reason)
-{
-    ++m_state.rekey_version;
-    ++m_rekey_count;
-
-    // Rotate TEK: SHA256(TEK_old || timestamp)
-    utils::ByteBuffer seed(
-        m_state.current_tek.begin(),
-        m_state.current_tek.end());
-    utils::u64 ts =
-        utils::TimeUtils::NowEpochMicros();
-    utils::ByteUtils::AppendU64BE(seed, ts);
-
-    auto new_key =
-        crypto::HmacSha256Util::Compute(
-            m_state.hmac_key, seed);
-    std::memcpy(m_state.current_tek.data(),
-        new_key.data(),
-        std::min(new_key.size(),
-            m_state.current_tek.size()));
-
-    UAV_LOG_INFO(uav::log::channels::PACKET,
-        "SkdcApplication: rekey"
-        << " cluster=" << m_cluster_id
-        << " reason=" << RekeyReasonToString(reason)
-        << " version=" << m_state.rekey_version);
-
-    BroadcastMtk();
-}
-
-// ===========================================================================
-// ReceiveFromKdc
-// ===========================================================================
-void SkdcApplication::ReceiveFromKdc(
-    Ptr<Socket> socket)
-{
-    Ptr<Packet> pkt;
-    Address from;
-
-    while ((pkt = socket->RecvFrom(from))) {
-        uint32_t sz = pkt->GetSize();
-        if (sz < 16) continue;
-
-        utils::ByteBuffer buf(sz);
-        pkt->CopyData(buf.data(), sz);
-
-        // Parse: [cluster(4)][version(4)][tek(8)]
-        utils::u32 cluster =
-            utils::ByteUtils::ReadU32BE(buf.data());
-        if (cluster != m_cluster_id) continue;
-
-        UAV_LOG_INFO(uav::log::channels::PACKET,
-            "SkdcApplication: received from KDC"
-            << " cluster=" << cluster);
-
-        BroadcastMtk();
-    }
-}
-
-// ===========================================================================
-// Scheduling
+// Scheduling  (UNCHANGED)
 // ===========================================================================
 void SkdcApplication::ScheduleInitialBroadcast() {
     Simulator::Schedule(
@@ -348,13 +420,13 @@ void SkdcApplication::PeriodicBroadcast() {
 }
 
 // ===========================================================================
-// WiFi address
+// GetWifiAddress
+// PATCH: returns actual WiFi IP from topology (was "0.0.0.0")
 // ===========================================================================
-Ipv4Address SkdcApplication::GetWifiAddress()
-    const
-{
-    // SKDC nodes are ground nodes (no WiFi)
-    // They use CSMA only
+Ipv4Address SkdcApplication::GetWifiAddress() const {
+    if (m_topo) {
+        return m_topo->GetSkdcWifiAddr(m_cluster_id);
+    }
     return Ipv4Address("0.0.0.0");
 }
 

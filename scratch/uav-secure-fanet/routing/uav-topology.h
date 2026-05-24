@@ -1,33 +1,30 @@
 /**
- * routing/uav-topology.h
+ * routing/uav-topology.h  [PATCHED — dual-interface SKDC]
  *
- * Network Topology Builder for UAV Secure FANET simulation.
+ * CHANGE SUMMARY (incremental correction only):
+ *   1. TopologyResult: added skdc_wifi_devices + skdc_wifi_interfaces
+ *   2. TopologyResult: added GetSkdcWifiAddr()
+ *   3. wifi_nodes now includes SKDCs (for shared WiFi channel)
+ *   4. All existing APIs preserved exactly.
  *
- * TOPOLOGY:
- *   Ground infrastructure (CSMA wired backbone):
- *     Node 0     : KDC
- *     Nodes 1-3  : SKDC[0], SKDC[1], SKDC[2]
- *
- *   UAV swarm (WiFi adhoc):
- *     Nodes 4-9  : Cluster 0 UAVs (UAV 0-5)
- *     Nodes 10-15: Cluster 1 UAVs (UAV 6-11)
- *     Nodes 16-21: Cluster 2 UAVs (UAV 12-17)
- *
- *   Jammer:
- *     Node 22    : Mobile jammer
- *
- *   Total: 23 nodes
- *
- * NODE ID MAPPING:
+ * NODE ID MAPPING (unchanged):
  *   KDC    = 0
  *   SKDC_i = 1 + i          (i = 0,1,2)
  *   UAV_j  = 4 + j          (j = 0..17)
  *   JAMMER = 22
  *
+ * INTERFACE LAYOUT AFTER PATCH:
+ *   wifi_interfaces[0..2]   = SKDC0, SKDC1, SKDC2  (10.1.1.1–3)
+ *   wifi_interfaces[3..20]  = UAV0..UAV17           (10.1.1.4–21)
+ *   wifi_interfaces[21]     = Jammer                (10.1.1.22)
+ *   csma_interfaces[0..3]   = KDC, SKDC0,1,2       (192.168.0.x)
+ *
  * WIRELESS:
- *   802.11a, 5GHz, 26Mbps, AdhocWifiMac
- *   FriisPropagationLoss + NakagamiPropagationLoss
- *   20 dBm Tx power
+ *   Standard  : 802.11a
+ *   Band      : 5 GHz
+ *   Channel   : 36 (20 MHz)
+ *   Data rate : OfdmRate24Mbps
+ *   Tx power  : 20 dBm (UAV/SKDC), 30 dBm (jammer)
  *
  * CSMA:
  *   100 Mbps backbone between KDC and SKDCs
@@ -36,7 +33,6 @@
 #ifndef UAV_TOPOLOGY_H
 #define UAV_TOPOLOGY_H
 
-// NS-3 headers
 #include "ns3/core-module.h"
 #include "ns3/network-module.h"
 #include "ns3/wifi-module.h"
@@ -59,7 +55,7 @@ namespace uav {
 namespace routing {
 
 // ===========================================================================
-// TopologyConfig — simulation-wide parameters
+// TopologyConfig — simulation-wide parameters (unchanged)
 // ===========================================================================
 struct TopologyConfig {
     // Network
@@ -98,29 +94,37 @@ struct TopologyConfig {
 
 // ===========================================================================
 // TopologyResult — all node/device/interface references
+// PATCH: skdc_wifi_devices + skdc_wifi_interfaces added
+//        wifi_nodes now includes SKDCs
+//        wifi_interfaces[0..2] = SKDC0/1/2
+//        wifi_interfaces[3..20] = UAV0..17
+//        wifi_interfaces[21] = Jammer
 // ===========================================================================
 struct TopologyResult {
-    // Node containers
+    // Node containers (UNCHANGED)
     ns3::NodeContainer  all_nodes;
     ns3::NodeContainer  ground_nodes;   // KDC + SKDCs
     ns3::NodeContainer  kdc_node;
     ns3::NodeContainer  skdc_nodes;     // 3 SKDCs
     ns3::NodeContainer  uav_nodes;      // 18 UAVs
     ns3::NodeContainer  jammer_node;
-    ns3::NodeContainer  wifi_nodes;     // UAVs + jammer
 
-    // Per-cluster UAV containers
+    // PATCH: wifi_nodes now = SKDCs + UAVs + jammer (22 total)
+    // was: UAVs + jammer (19 total)
+    ns3::NodeContainer  wifi_nodes;     // SKDCs + UAVs + jammer
+
+    // Per-cluster UAV containers (UNCHANGED)
     std::array<ns3::NodeContainer, 3> cluster_nodes;
 
     // Device containers
-    ns3::NetDeviceContainer  csma_devices;
-    ns3::NetDeviceContainer  wifi_devices;
+    ns3::NetDeviceContainer  csma_devices;    // 4 devices (KDC+3SKDCs)
+    ns3::NetDeviceContainer  wifi_devices;    // 22 devices (3SKDCs+18UAVs+jammer)
 
     // Interface containers
-    ns3::Ipv4InterfaceContainer  csma_interfaces;
-    ns3::Ipv4InterfaceContainer  wifi_interfaces;
+    ns3::Ipv4InterfaceContainer  csma_interfaces;  // 4 interfaces
+    ns3::Ipv4InterfaceContainer  wifi_interfaces;  // 22 interfaces
 
-    // Node ID helpers
+    // Node ID helpers (UNCHANGED)
     static constexpr utils::u32 KDC_NODE_ID    = 0;
     static constexpr utils::u32 SKDC0_NODE_ID  = 1;
     static constexpr utils::u32 SKDC1_NODE_ID  = 2;
@@ -128,36 +132,53 @@ struct TopologyResult {
     static constexpr utils::u32 UAV0_NODE_ID   = 4;
     static constexpr utils::u32 JAMMER_NODE_ID = 22;
 
-    // Get NS-3 node ID for UAV index (0-17)
+    // WiFi interface layout offsets
+    // PATCH: SKDCs now occupy slots 0..2 in wifi_interfaces
+    static constexpr utils::u32 WIFI_SKDC_BASE = 0;  // SKDC0=0, SKDC1=1, SKDC2=2
+    static constexpr utils::u32 WIFI_UAV_BASE  = 3;  // UAV0=3, UAV1=4, ... UAV17=20
+    static constexpr utils::u32 WIFI_JAMMER    = 21; // Jammer=21
+
+    // Get NS-3 node ID for UAV index (0-17) — UNCHANGED
     static utils::u32 UavNodeId(utils::u32 uav_index) {
         return UAV0_NODE_ID + uav_index;
     }
 
-    // Get NS-3 node ID for SKDC (cluster 0-2)
+    // Get NS-3 node ID for SKDC (cluster 0-2) — UNCHANGED
     static utils::u32 SkdcNodeId(utils::u32 cluster) {
         return SKDC0_NODE_ID + cluster;
     }
 
-    // Get NS-3 node for UAV
+    // Get NS-3 node for UAV — UNCHANGED
     ns3::Ptr<ns3::Node> GetUavNode(utils::u32 uav_index) const {
         return uav_nodes.Get(uav_index);
     }
 
-    // Get NS-3 node for SKDC
+    // Get NS-3 node for SKDC — UNCHANGED
     ns3::Ptr<ns3::Node> GetSkdcNode(utils::u32 cluster) const {
         return skdc_nodes.Get(cluster);
     }
 
-    // Get NS-3 node for KDC
+    // Get NS-3 node for KDC — UNCHANGED
     ns3::Ptr<ns3::Node> GetKdcNode() const {
         return kdc_node.Get(0);
     }
 
-    // Get WiFi IP for UAV
-    ns3::Ipv4Address GetUavWifiAddr(utils::u32 uav_index) const;
+    // PATCH: UAV WiFi index is now WIFI_UAV_BASE + uav_index
+    // was: wifi_interfaces.GetAddress(uav_index)
+    ns3::Ipv4Address GetUavWifiAddr(utils::u32 uav_index) const {
+        return wifi_interfaces.GetAddress(WIFI_UAV_BASE + uav_index);
+    }
 
-    // Get CSMA IP for SKDC
+    // PATCH: NEW — get WiFi IP for SKDC (cluster 0-2)
+    ns3::Ipv4Address GetSkdcWifiAddr(utils::u32 cluster) const {
+        return wifi_interfaces.GetAddress(WIFI_SKDC_BASE + cluster);
+    }
+
+    // Get CSMA IP for SKDC — UNCHANGED
     ns3::Ipv4Address GetSkdcCsmaAddr(utils::u32 cluster) const;
+
+    // Get CSMA IP for KDC
+    ns3::Ipv4Address GetKdcCsmaAddr() const;
 };
 
 // ===========================================================================
@@ -180,11 +201,11 @@ public:
 private:
     TopologyConfig m_cfg;
 
-    // Build steps
+    // Build steps (UNCHANGED signatures)
     void CreateNodes(TopologyResult& topo);
     void ConfigureCsmaBackbone(TopologyResult& topo);
-    void ConfigureWifiAdhoc(TopologyResult& topo);
-    void InstallInternetStack(TopologyResult& topo);
+    void ConfigureWifiAdhoc(TopologyResult& topo);  // PATCH: now includes SKDCs
+    void InstallInternetStack(TopologyResult& topo); // PATCH: OLSR on SKDCs too
     void AssignAddresses(TopologyResult& topo);
     void ConfigureInitialPositions(TopologyResult& topo);
     void ConfigureOlsr(TopologyResult& topo);

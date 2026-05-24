@@ -119,17 +119,45 @@ FlowMetrics FlowMonitorManager::ComputeFlowMetrics(
 // UAV 6-11 = Cluster 1
 // UAV 12-17= Cluster 2
 // ===========================================================================
+/**
+ * routing/uav-flowmonitor.cc  [PATCH — GetClusterFromAddr]
+ *
+ * PATCH: GetClusterFromAddr updated for new wifi_interface layout.
+ *   Old layout: wifi_interfaces[0..17] = UAVs, [18] = jammer
+ *   New layout: wifi_interfaces[0..2] = SKDCs, [3..20] = UAVs, [21] = jammer
+ *
+ * Only GetClusterFromAddr() is changed.
+ * Paste this function replacing the existing one in uav-flowmonitor.cc.
+ */
+
+// ===========================================================================
+// REPLACE this function in routing/uav-flowmonitor.cc
+// ===========================================================================
 utils::u32 FlowMonitorManager::GetClusterFromAddr(
     const Ipv4Address& addr) const
 {
-    for (utils::u32 i = 0; i < 18; ++i) {
-        if (m_topo.wifi_interfaces.GetAddress(i) == addr) {
-            return i / 6;
-        }
-    }
-    return 0;
-}
+    // PATCH: UAVs now start at wifi_interfaces index WIFI_UAV_BASE (=3)
+    // SKDCs are at indices 0,1,2
+    // Jammer is at index 21
 
+    // Check SKDC WiFi addresses (indices 0..2)
+    for (utils::u32 c = 0; c < 3; ++c) {
+        utils::u32 idx = TopologyResult::WIFI_SKDC_BASE + c;
+        if (m_topo.wifi_interfaces.GetAddress(idx) == addr)
+            return c;  // traffic from/to SKDC c → attribute to cluster c
+    }
+
+    // Check UAV WiFi addresses (indices 3..20)
+    for (utils::u32 i = 0; i < 18; ++i) {
+        utils::u32 idx = TopologyResult::WIFI_UAV_BASE + i;
+        if (m_topo.wifi_interfaces.GetAddress(idx) == addr)
+            return i / 6;  // UAV i → cluster i/6
+    }
+
+    // Jammer (index 21) or unknown — do NOT default to cluster 0
+    // Return UINT32_MAX to signal "unclassified"
+    return UINT32_MAX;
+}
 // ===========================================================================
 // Collect metrics after simulation
 // ===========================================================================

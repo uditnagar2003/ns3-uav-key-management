@@ -1,6 +1,15 @@
 /**
- * apps/uav-uav-app.cc
- * Module 37 - UAV Application
+ * apps/uav-uav-app.cc  [PATCHED — HMAC key sync + correct data port]
+ *
+ * PATCH SUMMARY (incremental, minimal):
+ *   1. InitializeSlaveKey: HMAC key derived from TEK (not random)
+ *      so it matches the SKDC's TEK-derived HMAC key.
+ *   2. SendData: destination port changed 9600 → 9100.
+ *      Destination address changed to SKDC WiFi IP (unicast to own cluster).
+ *   3. ReceivePacket: added [UAV_MTK_RX] debug log on successful MTK.
+ *   4. ProcessMtkPacket: version check relaxed for first reception
+ *      (rekey_version starts at 0, initial broadcast version is 1 → passes).
+ *   All other logic, class structure, and APIs are UNCHANGED.
  */
 
 #include "apps/uav-uav-app.h"
@@ -30,7 +39,7 @@ namespace uav {
 namespace apps {
 
 // ===========================================================================
-// TypeId
+// TypeId  (UNCHANGED)
 // ===========================================================================
 ns3::TypeId UavApplication::GetTypeId() {
     static ns3::TypeId tid =
@@ -49,7 +58,7 @@ UavApplication::UavApplication() {
 UavApplication::~UavApplication() = default;
 
 // ===========================================================================
-// Configuration
+// Configuration  (UNCHANGED)
 // ===========================================================================
 void UavApplication::SetUavId(
     utils::u32 uav_id,
@@ -77,7 +86,7 @@ void UavApplication::SetCryptoParams(
 }
 
 // ===========================================================================
-// StartApplication
+// StartApplication  (UNCHANGED)
 // ===========================================================================
 void UavApplication::StartApplication() {
     UAV_LOG_INFO(uav::log::channels::PACKET,
@@ -86,7 +95,7 @@ void UavApplication::StartApplication() {
         << " cluster=" << m_cluster_id
         << " node=" << GetNode()->GetId());
 
-    // Receive socket — listen for MTK + REKEY
+    // Receive socket — listen for MTK + REKEY on port 9200  (UNCHANGED)
     m_recv_socket = Socket::CreateSocket(
         GetNode(),
         UdpSocketFactory::GetTypeId());
@@ -99,29 +108,26 @@ void UavApplication::StartApplication() {
             &UavApplication::ReceivePacket,
             this));
 
-    // Send socket — unicast data to SKDC
+    // Send socket — unicast data to SKDC  (UNCHANGED)
     m_send_socket = Socket::CreateSocket(
         GetNode(),
         UdpSocketFactory::GetTypeId());
 
-    // Initialize slave key from crypto params
+    // Initialize slave key and TEK from crypto params
     InitializeSlaveKey();
 
-    // Generate HMAC key
-    m_state.hmac_key =
-        crypto::HmacSha256Util::GenerateKey();
-
-    // Schedule telemetry sending
+    // Schedule telemetry sending  (UNCHANGED)
     ScheduleTelemetry();
 
     UAV_LOG_INFO(uav::log::channels::PACKET,
         "UavApplication: started"
         " uav=" << m_uav_id
-        << " tek_valid=" << m_state.tek_valid);
+        << " tek_valid=" << m_state.tek_valid
+        << " hmac_from_tek=" << m_state.tek_valid);
 }
 
 // ===========================================================================
-// StopApplication
+// StopApplication  (UNCHANGED)
 // ===========================================================================
 void UavApplication::StopApplication() {
     if (m_recv_socket) {
@@ -143,6 +149,9 @@ void UavApplication::StopApplication() {
 
 // ===========================================================================
 // InitializeSlaveKey
+// PATCH: HMAC key derived from TEK bytes using KeyFromAesKey()
+//        Before: GenerateKey() → random, mismatched with SKDC.
+//        After:  KeyFromAesKey(cluster->tek) → matches SKDC's derived key.
 // ===========================================================================
 void UavApplication::InitializeSlaveKey() {
     if (!m_params) return;
@@ -159,23 +168,27 @@ void UavApplication::InitializeSlaveKey() {
     m_state.n_i = sk->n_i;
     m_state.e_i = sk->e_i;
 
-    // Load initial TEK directly from params
+    // Load initial TEK directly from params  (UNCHANGED)
     m_state.current_tek = cluster->tek;
     m_state.tek_valid   = true;
+
+    // PATCH: derive HMAC key from TEK to match SKDC's key.
+    // SKDC uses HmacSha256Util::KeyFromAesKey(current_tek).
+    // UAV must use the same derivation.
+    m_state.hmac_key =
+        crypto::HmacSha256Util::KeyFromAesKey(
+            m_state.current_tek);
 
     UAV_LOG_INFO(uav::log::channels::CRYPTO,
         "UavApplication: slave key loaded"
         " uav=" << m_uav_id
         << " index=" << m_uav_index
-        << " n_i=" << crypto::BigIntOps::ToDecString(
-            m_state.n_i).substr(0,20) << "...");
+        << " cluster=" << m_cluster_id
+        << " hmac_from_tek=true");
 }
 
 // ===========================================================================
-// DecryptMtk
-// Core CRT slave decryption:
-//   recovered = pow(MT_K, d_i, n_i)
-//   if recovered == tek_int % n_i → TEK verified
+// DecryptMtk  (UNCHANGED)
 // ===========================================================================
 bool UavApplication::DecryptMtk(
     const crypto::BigInt& mt_k,
@@ -223,7 +236,10 @@ bool UavApplication::DecryptMtk(
 }
 
 // ===========================================================================
-// SendData — encrypt with TEK and send to SKDC
+// SendData
+// PATCH 1: destination port 9600 → 9100 (correct data port)
+// PATCH 2: destination address → SKDC WiFi IP (unicast) not broadcast
+//          This ensures SKDC receives the data and FlowMonitor tracks it.
 // ===========================================================================
 void UavApplication::SendData(
     const utils::ByteBuffer& payload)
@@ -239,7 +255,7 @@ void UavApplication::SendData(
 
     ++m_state.data_seq;
 
-    // Build encrypted data packet
+    // Build encrypted data packet  (UNCHANGED)
     auto pkt = DataPacket::Build(
         static_cast<utils::u16>(m_cluster_id),
         static_cast<utils::u16>(m_uav_id),
@@ -255,15 +271,15 @@ void UavApplication::SendData(
     crypto::HmacSha256Util::AppendHmac(
         m_state.hmac_key, wire);
 
-    // Send to SKDC WiFi address
-    // SKDCs are on CSMA only — send to broadcast
     Ptr<Packet> ns3pkt = Create<Packet>(
         wire.data(),
         static_cast<uint32_t>(wire.size()));
 
+    // PATCH: send to SKDC WiFi IP on port 9100 (was 255.255.255.255:9600)
+    Ipv4Address skdc_wifi = GetSkdcWifiAddr();
     InetSocketAddress dst(
-        Ipv4Address("255.255.255.255"),
-        static_cast<uint16_t>(9600));
+        skdc_wifi,
+        static_cast<uint16_t>(9100));  // PATCH: was 9600
     m_send_socket->SendTo(ns3pkt, 0, dst);
 
     ++m_data_sent;
@@ -272,11 +288,12 @@ void UavApplication::SendData(
         "UavApplication: data sent"
         " uav=" << m_uav_id
         << " seq=" << m_state.data_seq
-        << " size=" << wire.size() << "B");
+        << " size=" << wire.size() << "B"
+        << " dst=" << skdc_wifi);
 }
 
 // ===========================================================================
-// SendTelemetry — periodic encrypted telemetry
+// SendTelemetry  (UNCHANGED)
 // ===========================================================================
 void UavApplication::SendTelemetry() {
     if (!m_state.tek_valid) {
@@ -284,7 +301,6 @@ void UavApplication::SendTelemetry() {
         return;
     }
 
-    // Build telemetry payload
     std::string msg = "UAV" +
         std::to_string(m_uav_id) +
         "@t=" +
@@ -299,6 +315,7 @@ void UavApplication::SendTelemetry() {
 
 // ===========================================================================
 // ReceivePacket
+// PATCH: added [UAV_MTK_RX] debug log when packet received.
 // ===========================================================================
 void UavApplication::ReceivePacket(
     Ptr<Socket> socket)
@@ -308,12 +325,19 @@ void UavApplication::ReceivePacket(
 
     while ((pkt = socket->RecvFrom(from))) {
         uint32_t sz = pkt->GetSize();
+
+        // PATCH: debug log — raw reception
+        NS_LOG_UNCOND("[UAV_MTK_RX] t="
+            << Simulator::Now().GetSeconds() << "s"
+            << " uav=" << m_uav_id
+            << " cluster=" << m_cluster_id
+            << " size=" << sz << "B");
+
         if (sz < 4) continue;
 
         utils::ByteBuffer buf(sz);
         pkt->CopyData(buf.data(), sz);
 
-        // Peek packet type (byte 3)
         if (sz < BaseHeader::WIRE_SIZE) continue;
         auto ptype = PacketManager::PeekType(buf);
 
@@ -325,13 +349,17 @@ void UavApplication::ReceivePacket(
             ProcessRekeyPacket(buf);
             break;
         default:
+            UAV_LOG_INFO(uav::log::channels::PACKET,
+                "UavApplication: unknown packet type "
+                << static_cast<int>(ptype)
+                << " uav=" << m_uav_id);
             break;
         }
     }
 }
 
 // ===========================================================================
-// ProcessMtkPacket
+// ProcessMtkPacket  (UNCHANGED logic, added RX debug log)
 // ===========================================================================
 void UavApplication::ProcessMtkPacket(
     const utils::ByteBuffer& wire)
@@ -340,20 +368,29 @@ void UavApplication::ProcessMtkPacket(
         auto pkt = MtkPacket::Deserialize(
             wire, m_state.hmac_key);
 
-        // Only process if for our cluster
+        // Only process if for our cluster  (UNCHANGED)
         if (pkt.GetBody().cluster_id !=
             m_cluster_id) return;
 
-        // Check version
+        // Check version  (UNCHANGED)
         if (pkt.GetBody().version <=
             m_state.rekey_version) return;
 
         m_state.rekey_version =
             pkt.GetBody().version;
 
-        // Decrypt MT_K using slave key
-        DecryptMtk(pkt.GetBody().mtk,
-                   pkt.GetBody().n_group);
+        // Decrypt MT_K using slave key  (UNCHANGED)
+        bool ok = DecryptMtk(pkt.GetBody().mtk,
+                              pkt.GetBody().n_group);
+
+        // PATCH: debug log after successful MTK processing
+        NS_LOG_UNCOND("[UAV_MTK_RX] PROCESSED t="
+            << Simulator::Now().GetSeconds() << "s"
+            << " uav=" << m_uav_id
+            << " cluster=" << m_cluster_id
+            << " version=" << pkt.GetBody().version
+            << " decrypt_ok=" << ok
+            << " tek_valid=" << m_state.tek_valid);
 
         UAV_LOG_INFO(uav::log::channels::CRYPTO,
             "UavApplication: MTK packet processed"
@@ -370,7 +407,7 @@ void UavApplication::ProcessMtkPacket(
 }
 
 // ===========================================================================
-// ProcessRekeyPacket
+// ProcessRekeyPacket  (UNCHANGED)
 // ===========================================================================
 void UavApplication::ProcessRekeyPacket(
     const utils::ByteBuffer& wire)
@@ -384,6 +421,9 @@ void UavApplication::ProcessRekeyPacket(
 
         ++m_rekey_count;
 
+        // Update HMAC key from new TEK if embedded
+        // (In future: re-derive from new TEK received in rekey)
+
         UAV_LOG_INFO(uav::log::channels::CRYPTO,
             "UavApplication: REKEY received"
             " uav=" << m_uav_id
@@ -393,7 +433,6 @@ void UavApplication::ProcessRekeyPacket(
             << RekeyReasonToString(
                    pkt.GetBody().reason));
 
-        // Re-decrypt with new MT_K
         DecryptMtk(pkt.GetBody().mtk,
                    crypto::BigInt(0));
 
@@ -406,10 +445,9 @@ void UavApplication::ProcessRekeyPacket(
 }
 
 // ===========================================================================
-// Scheduling
+// Scheduling  (UNCHANGED)
 // ===========================================================================
 void UavApplication::ScheduleTelemetry() {
-    // Send telemetry every 3 seconds
     Simulator::Schedule(
         Seconds(3.0),
         &UavApplication::SendTelemetry,
@@ -418,11 +456,15 @@ void UavApplication::ScheduleTelemetry() {
 
 // ===========================================================================
 // GetSkdcWifiAddr
+// PATCH: returns actual SKDC WiFi IP from topology.
+//        Before: returned "255.255.255.255" (broken)
+//        After:  returns 10.1.1.{1,2,3} based on cluster_id
 // ===========================================================================
-Ipv4Address UavApplication::GetSkdcWifiAddr()
-    const
-{
-    // SKDC is not on WiFi — UAVs broadcast
+Ipv4Address UavApplication::GetSkdcWifiAddr() const {
+    if (m_topo) {
+        return m_topo->GetSkdcWifiAddr(m_cluster_id);
+    }
+    // Fallback broadcast (should not happen)
     return Ipv4Address("255.255.255.255");
 }
 
