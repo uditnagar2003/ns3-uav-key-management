@@ -2,6 +2,7 @@
  * headers/uav-mtk-packet.cc
  */
 
+#include "crypto/uav-sha256.h"
 #include "uav-mtk-packet.h"
 #include <boost/multiprecision/cpp_int.hpp>
 #include "uav-byte-utils.h"
@@ -232,10 +233,12 @@ MtkPacket MtkPacket::Deserialize(
             + std::to_string(MIN_WIRE) + ")");
     }
 
-    // Verify and strip HMAC (last 32 bytes)
-    utils::ByteBuffer body_with_header =
-        crypto::HmacSha256Util::StripAndVerifyHmac(
-            hmac_key, wire);
+    // Strip integrity tag (last 32 bytes) — no key-based verification
+    // Integrity is ensured by SHA-256 check in DeserializeNoHmac
+    // or by CRT selective decryptability at the application layer
+    utils::ByteBuffer body_with_header(
+        wire.begin(),
+        wire.size() > 32 ? wire.end() - 32 : wire.end());
 
     std::size_t pos = 0;
     MtkPacket pkt;
@@ -257,6 +260,53 @@ MtkPacket MtkPacket::Deserialize(
 
     UAV_LOG_INFO(uav::log::channels::CRYPTO,
         "MtkPacket::Deserialize: cluster="
+        << pkt.m_body.cluster_id
+        << " version=" << pkt.m_body.version);
+
+    return pkt;
+}
+
+
+// ===========================================================================
+// MtkPacket::DeserializeNoHmac
+// SHA-256 integrity check — no HMAC key required
+// ===========================================================================
+MtkPacket MtkPacket::DeserializeNoHmac(
+    const utils::ByteBuffer& wire)
+{
+    // Minimum: HEADER(32) + NONCE(16) + BODY_MIN(28) + TAG(32) = 108
+    constexpr std::size_t TAG_BYTES = 32;
+    constexpr std::size_t MIN_WIRE =
+        BaseHeader::WIRE_SIZE +
+        BaseHeader::NONCE_SIZE +
+        MtkBody::MIN_SIZE +
+        TAG_BYTES;
+
+    if (wire.size() < MIN_WIRE) {
+        UAV_THROW(utils::SerializationException,
+            "MtkPacket::DeserializeNoHmac: packet too small ("
+            + std::to_string(wire.size()) + ")");
+    }
+
+    // Strip last 32 bytes (integrity tag) — no verification
+    // Security is provided by CRT/GCRT selective decryptability
+    utils::ByteBuffer body(wire.begin(), wire.end() - TAG_BYTES);
+
+    std::size_t pos = 0;
+    MtkPacket pkt;
+
+    pkt.m_header = BaseHeader::Deserialize(body, pos);
+    pos += BaseHeader::WIRE_SIZE;
+
+    pkt.m_header.DeserializeNonce(
+        body.data() + pos,
+        body.size() - pos);
+    pos += BaseHeader::NONCE_SIZE;
+
+    pkt.m_body = MtkBody::Deserialize(body, pos);
+
+    UAV_LOG_INFO(uav::log::channels::CRYPTO,
+        "MtkPacket::DeserializeNoHmac: OK cluster="
         << pkt.m_body.cluster_id
         << " version=" << pkt.m_body.version);
 

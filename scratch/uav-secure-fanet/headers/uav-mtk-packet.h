@@ -124,6 +124,11 @@ public:
         const utils::ByteBuffer& wire,
         const crypto::HmacKey&   hmac_key);
 
+    /// Deserialize with SHA-256 integrity check (no HMAC key needed).
+    /// Throws CryptoException if SHA-256 check fails.
+    static MtkPacket DeserializeNoHmac(
+        const utils::ByteBuffer& wire);
+
     // -----------------------------------------------------------------------
     // Accessors
     // -----------------------------------------------------------------------

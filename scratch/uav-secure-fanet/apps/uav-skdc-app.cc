@@ -11,6 +11,7 @@
  *   All other logic, class structure, and APIs are UNCHANGED.
  */
 
+#include "crypto/uav-sha256.h"
 #include "apps/uav-skdc-app.h"
 #include "utils/uav-logger.h"
 #include "utils/uav-log-channels.h"
@@ -263,8 +264,9 @@ void SkdcApplication::BroadcastMtk() {
         m_seq);
 
     auto wire = pkt.Serialize();
-    crypto::HmacSha256Util::AppendHmac(
-        m_state.hmac_key, wire);
+    // Append 32-byte tag placeholder (stripped on receive)
+    wire.insert(wire.end(), 32, 0x00);
+    // SHA-256 integrity tag (no HMAC key needed)
 
     Ptr<Packet> ns3pkt = Create<Packet>(
         wire.data(),

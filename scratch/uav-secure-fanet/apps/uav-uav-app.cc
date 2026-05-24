@@ -367,8 +367,7 @@ void UavApplication::ProcessMtkPacket(
     const utils::ByteBuffer& wire)
 {
     try {
-        auto pkt = MtkPacket::Deserialize(
-            wire, m_state.hmac_key);
+        auto pkt = MtkPacket::DeserializeNoHmac(wire);
 
         // Only process if for our cluster  (UNCHANGED)
         if (pkt.GetBody().cluster_id !=
