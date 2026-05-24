@@ -1,0 +1,7 @@
+time_s,event_type,uav_id,cluster_id,details
+20.0,JOIN,2,0,TEK_v1
+25.0,LEAVE,1,0,TEK_v2
+30.0,JOIN,3,0,TEK_v2
+40.0,JOIN,4,0,TEK_v2
+40.0,LEAVE,2,0,TEK_v3
+50.0,COMPROMISE,1,0,REVOKED_TEK_v4

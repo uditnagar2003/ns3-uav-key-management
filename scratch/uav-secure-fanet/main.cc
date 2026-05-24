@@ -255,21 +255,27 @@ int main(int argc, char* argv[])
     bool     enable_pcap = true;
     bool     enable_anim = true;
 
+    std::string scenario_name = "baseline";
+
     CommandLine cmd;
     cmd.AddValue("seed",     "RNG seed",            seed);
     cmd.AddValue("duration", "Sim duration (s)",    duration);
     cmd.AddValue("pcap",     "Enable PCAP",         enable_pcap);
     cmd.AddValue("anim",     "Enable NetAnim",       enable_anim);
+    cmd.AddValue("scenario", "Scenario to run",     scenario_name);
     cmd.Parse(argc, argv);
-     
-    std::string scenario_name = "baseline";
-    cmd.AddValue("scenario", "Scenario to run", scenario_name);
-    
+
     if (scenario_name == "rekey_perf") {
-    uav::scenario::RekeyPerfScenarioConfig cfg;
-    uav::scenario::RekeyPerfScenario s(cfg);
-    s.RunAll();
-    return 0;
+        uav::scenario::RekeyPerfScenarioConfig cfg;
+        cfg.duration_s       = duration;
+        cfg.seed_base        = seed;
+        cfg.enable_netanim   = enable_anim;
+        cfg.enable_pcap      = enable_pcap;
+        cfg.enable_flowmon   = true;
+        cfg.output_dir       = "scratch/uav-secure-fanet/output/rekey_perf";
+        uav::scenario::RekeyPerfScenario s(cfg);
+        s.RunAll();
+        return 0;
     }
     RngSeedManager::SetSeed(seed);
 

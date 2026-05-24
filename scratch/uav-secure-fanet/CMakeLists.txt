@@ -67,6 +67,7 @@ set(uav_sources
     metrics/uav-sinr-metrics.cc
     metrics/uav-csv-export.cc
     metrics/uav-pcap-export.cc
+    scenario/rekey_perf_scenario.cc
 )
 
 build_exec(
