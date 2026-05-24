@@ -1,5 +1,5 @@
 uav_id,cluster_id,avg_delay_ms,min_delay_ms,max_delay_ms,jitter_ms
-0,0,6.8953,0,0,1.53813
+0,0,2.50028,0,0,1.80851
 1,0,0,0,0,0
 2,0,0,0,0,0
 3,0,0,0,0,0

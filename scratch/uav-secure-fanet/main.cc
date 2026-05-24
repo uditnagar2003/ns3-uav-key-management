@@ -66,6 +66,8 @@
 #include "metrics/uav-csv-export.h"
 #include "metrics/uav-pcap-export.h"
 
+#include "scenario/rekey_perf_scenario.h"
+
 #include <fstream>
 #include <iostream>
 #include <iomanip>
@@ -259,7 +261,16 @@ int main(int argc, char* argv[])
     cmd.AddValue("pcap",     "Enable PCAP",         enable_pcap);
     cmd.AddValue("anim",     "Enable NetAnim",       enable_anim);
     cmd.Parse(argc, argv);
-
+     
+    std::string scenario_name = "baseline";
+    cmd.AddValue("scenario", "Scenario to run", scenario_name);
+    
+    if (scenario_name == "rekey_perf") {
+    uav::scenario::RekeyPerfScenarioConfig cfg;
+    uav::scenario::RekeyPerfScenario s(cfg);
+    s.RunAll();
+    return 0;
+    }
     RngSeedManager::SetSeed(seed);
 
     // -----------------------------------------------------------------------
@@ -515,83 +526,4 @@ int main(int argc, char* argv[])
     // -----------------------------------------------------------------------
     NS_LOG_UNCOND("\nStarting simulation...");
     Simulator::Stop(Seconds(duration));
-    Simulator::Run();
-    NS_LOG_UNCOND("Simulation complete.");
-
-    // -----------------------------------------------------------------------
-    // Post-simulation metrics
-    // -----------------------------------------------------------------------
-    NS_LOG_UNCOND("\n=== Post-Simulation Metrics ===");
-
-    flow_mgr.CollectMetrics(duration);
-    tput_mgr.Compute();
-    delay_mgr.Compute();
-    pdr_mgr.Compute();
-    overhead_mgr.Compute(duration);
-    rekey_lat.Compute();
-    sinr_mgr.Compute();
-
-    // Print summaries
-    tput_mgr.PrintSummary();
-    delay_mgr.PrintSummary();
-    pdr_mgr.PrintSummary();
-    overhead_mgr.PrintSummary();
-    rekey_lat.PrintSummary();
-    sinr_mgr.PrintSummary();
-    ho_mgr.PrintHandoverStats();
-
-    // Export all CSV + FlowMonitor XML
-    csv_mgr.ExportAll(duration);
-
-    // FlowMonitor XML + cluster CSV
-    std::string fm_xml = std::string(OUTPUT_DIR)
-        + "/flowmonitor.xml";
-    std::string cluster_csv = std::string(OUTPUT_DIR)
-        + "/metrics_per_cluster.csv";
-    flow_mgr.WriteXml(fm_xml);
-    flow_mgr.WriteClusterCsv(cluster_csv);
-
-    // PCAP summary
-    if (enable_pcap) pcap_mgr.PrintSummary();
-
-    // -----------------------------------------------------------------------
-    // Final status
-    // -----------------------------------------------------------------------
-    // Print final UAV positions to diagnose handover
-    mob_mgr.PrintPositions();
-
-    NS_LOG_UNCOND("\n========================================");
-    NS_LOG_UNCOND(" SIMULATION RESULTS");
-    NS_LOG_UNCOND("========================================");
-    NS_LOG_UNCOND(" Duration:        " << duration << "s");
-    NS_LOG_UNCOND(" Total rekeys:    "
-        << rekey_mgr.GetTotalRekeys());
-    NS_LOG_UNCOND(" Total handovers: "
-        << ho_mgr.GetTotalHandovers());
-    NS_LOG_UNCOND(" Compromised:     "
-        << color_mgr.GetCompromisedCount());
-    NS_LOG_UNCOND(" Jammed UAVs:     "
-        << sinr_mgr.GetJammedCount() << "/18");
-    NS_LOG_UNCOND(" Global PDR:      "
-        << std::fixed << std::setprecision(4)
-        << pdr_mgr.GetGlobalPdr());
-    NS_LOG_UNCOND(" Global tput:     "
-        << tput_mgr.GetGlobalThroughput() << " kbps");
-    NS_LOG_UNCOND(" Avg delay:       "
-        << delay_mgr.GetGlobalAvgDelay() << " ms");
-    NS_LOG_UNCOND(" Routing ovhd:    "
-        << overhead_mgr.GetOverheadRatio() * 100.0 << " %");
-    NS_LOG_UNCOND(" SINR avg:        "
-        << sinr_mgr.GetGlobalAvgSinr() << " dB");
-    NS_LOG_UNCOND(" Rekey latency:   "
-        << rekey_lat.GetAvgLatency() << " ms");
-    NS_LOG_UNCOND("========================================");
-    NS_LOG_UNCOND(" Output: " << OUTPUT_DIR);
-    NS_LOG_UNCOND(" PCAP:   " << PCAP_DIR);
-    NS_LOG_UNCOND(" NetAnim: " << OUTPUT_DIR
-        << "/uav-fanet-anim.xml");
-    NS_LOG_UNCOND("========================================");
-
-    Simulator::Destroy();
-    return 0;
 }

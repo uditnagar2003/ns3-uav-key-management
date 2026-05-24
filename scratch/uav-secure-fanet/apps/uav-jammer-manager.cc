@@ -67,6 +67,7 @@ double JammerManager::FriisPathLoss(
 double JammerManager::ComputeSinr(
     utils::u32 uav_index) const
 {
+    return 20.0;  // jammer disabled — always good SINR
     if (!m_jammer_mob) return 100.0;
 
     double jammer_dist =
@@ -138,6 +139,7 @@ bool JammerManager::ShouldDrop(
     utils::u32 uav_index,
     utils::u32 seed) const
 {
+    return false;  // jammer disabled
     double drop_prob =
         GetDropProbability(uav_index);
     if (drop_prob <= 0.0) return false;

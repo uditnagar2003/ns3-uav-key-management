@@ -67,7 +67,7 @@ public:
     static constexpr double UAV_TX_POWER_DBM    = 20.0;
 
     // Jammer Tx power
-    static constexpr double JAMMER_TX_POWER_DBM = 30.0;
+    static constexpr double JAMMER_TX_POWER_DBM = -999.0;
 
     // -----------------------------------------------------------------------
     // Construction

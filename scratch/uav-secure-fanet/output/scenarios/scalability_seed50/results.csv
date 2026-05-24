@@ -1,6 +1,8 @@
 scenario,run,seed,rekeys,handovers,pdr,throughput_kbps,sinr_db
 scenario,run,seed,rekeys,handovers,pdr,throughput_kbps,sinr_db
 scenario,run,seed,rekeys,handovers,pdr,throughput_kbps,sinr_db
+scenario,run,seed,rekeys,handovers,pdr,throughput_kbps,sinr_db
+scenario,run,seed,rekeys,handovers,pdr,throughput_kbps,sinr_db
 scalability_seed50,1,92,903,347,1.0000,kbps,dB
 scalability_seed50,2,93,883,279,1.0000,kbps,dB
 scalability_seed50,3,94,903,466,1.0000,kbps,dB
@@ -10,3 +12,9 @@ scalability_seed50,3,94,903,466,1.0000,0.03926,-2.5
 scalability_seed50,1,92,903,347,1.0000,0.03926,0.6116
 scalability_seed50,2,93,883,279,1.0000,0.03926,-3.614
 scalability_seed50,3,94,903,466,1.0000,0.03926,-2.5
+scalability_seed50,1,92,893,294,0.2645,1.663,-3.298
+scalability_seed50,2,93,903,350,0.2536,1.442,-2.699
+scalability_seed50,3,94,903,446,0.2164,0.9118,-0.2913
+scalability_seed50,1,92,893,294,0.2645,1.663,-3.298
+scalability_seed50,2,93,903,350,0.2536,1.442,-2.699
+scalability_seed50,3,94,903,446,0.2164,0.9118,-0.2913
