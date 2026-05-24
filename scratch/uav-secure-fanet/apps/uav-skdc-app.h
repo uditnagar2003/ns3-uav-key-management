@@ -116,6 +116,9 @@ public:
     utils::u64 GetRekeyCount() const {
         return m_rekey_count;
     }
+    utils::u64 GetDataRxCount() const {
+        return m_data_rx_count;
+    }
     utils::u32 GetMemberCount() const {
         return static_cast<utils::u32>(
             m_state.members.size());
@@ -136,13 +139,15 @@ private:
     // Sockets
     ns3::Ptr<ns3::Socket> m_csma_socket;  // recv from KDC
     ns3::Ptr<ns3::Socket> m_wifi_socket;  // send to UAVs
+    ns3::Ptr<ns3::Socket> m_data_socket;  // recv DATA from UAVs (port 9100)
 
     // Sequence counter
     crypto::SequenceCounter m_seq;
 
     // Stats
-    utils::u64 m_mtk_count   = 0;
-    utils::u64 m_rekey_count = 0;
+    utils::u64 m_mtk_count      = 0;
+    utils::u64 m_rekey_count    = 0;
+    utils::u64 m_data_rx_count  = 0;
 
     // Internal
     void InitializeState();
@@ -150,6 +155,8 @@ private:
     void SchedulePeriodicBroadcast();
     void PeriodicBroadcast();
     void ReceiveFromKdc(
+        ns3::Ptr<ns3::Socket> socket);
+    void ReceiveDataFromUav(
         ns3::Ptr<ns3::Socket> socket);
     ns3::Ipv4Address GetWifiAddress() const;
 };

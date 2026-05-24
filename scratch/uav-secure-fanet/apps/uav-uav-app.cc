@@ -282,9 +282,18 @@ void UavApplication::SendData(
     InetSocketAddress dst(
         skdc_wifi,
         static_cast<uint16_t>(9100));  // PATCH: was 9600
-    m_send_socket->SendTo(ns3pkt, 0, dst);
+    int data_sent_bytes = m_send_socket->SendTo(ns3pkt, 0, dst);
 
     ++m_data_sent;
+
+    NS_LOG_UNCOND("[DATA_TX] t="
+        << Simulator::Now().GetSeconds() << "s"
+        << " uav=" << m_uav_id
+        << " cluster=" << m_cluster_id
+        << " seq=" << m_state.data_seq
+        << " size=" << wire.size() << "B"
+        << " dst=" << skdc_wifi
+        << " sent=" << data_sent_bytes);
 
     UAV_LOG_INFO(uav::log::channels::PACKET,
         "UavApplication: data sent"

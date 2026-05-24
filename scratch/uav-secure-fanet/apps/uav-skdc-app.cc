@@ -158,6 +158,22 @@ void SkdcApplication::StartApplication() {
             << " wifi_ip=" << wifi_ip);
     }
 
+    // Data receive socket — UAVs send encrypted data to port 9100
+    m_data_socket = Socket::CreateSocket(
+        GetNode(),
+        UdpSocketFactory::GetTypeId());
+    InetSocketAddress data_local(
+        Ipv4Address::GetAny(),
+        static_cast<uint16_t>(9100));
+    m_data_socket->Bind(data_local);
+    m_data_socket->SetRecvCallback(
+        MakeCallback(
+            &SkdcApplication::ReceiveDataFromUav,
+            this));
+
+    NS_LOG_UNCOND("[SKDC_DATA_READY] cluster=" << m_cluster_id
+        << " listening on port 9100");
+
     // Initialize crypto state
     InitializeState();
 
@@ -181,6 +197,10 @@ void SkdcApplication::StopApplication() {
     if (m_wifi_socket) {
         m_wifi_socket->Close();
         m_wifi_socket = nullptr;
+    }
+    if (m_data_socket) {
+        m_data_socket->Close();
+        m_data_socket = nullptr;
     }
 
     UAV_LOG_INFO(uav::log::channels::PACKET,
@@ -443,6 +463,40 @@ Ipv4Address SkdcApplication::GetWifiAddress() const {
         return m_topo->GetSkdcWifiAddr(m_cluster_id);
     }
     return Ipv4Address("0.0.0.0");
+}
+
+
+// ===========================================================================
+// ReceiveDataFromUav — receive encrypted DATA packets from UAVs on port 9100
+// ===========================================================================
+void SkdcApplication::ReceiveDataFromUav(
+    ns3::Ptr<ns3::Socket> socket)
+{
+    ns3::Ptr<ns3::Packet> pkt;
+    ns3::Address from;
+
+    while ((pkt = socket->RecvFrom(from))) {
+        ++m_data_rx_count;
+
+        ns3::Ipv4Address src_ip;
+        if (ns3::InetSocketAddress::IsMatchingType(from)) {
+            src_ip = ns3::InetSocketAddress::ConvertFrom(from).GetIpv4();
+        }
+
+        NS_LOG_UNCOND("[DATA_RX] t="
+            << ns3::Simulator::Now().GetSeconds() << "s"
+            << " cluster=" << m_cluster_id
+            << " size=" << pkt->GetSize() << "B"
+            << " from=" << src_ip
+            << " total_rx=" << m_data_rx_count);
+
+        UAV_LOG_INFO(uav::log::channels::PACKET,
+            "SkdcApplication: DATA rx"
+            << " cluster=" << m_cluster_id
+            << " size=" << pkt->GetSize()
+            << " from=" << src_ip
+            << " total=" << m_data_rx_count);
+    }
 }
 
 } // namespace apps
