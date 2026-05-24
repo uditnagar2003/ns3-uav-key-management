@@ -13,6 +13,7 @@
 #include <sstream>
 #include <iomanip>
 #include <fstream>
+#include <limits>
 #include <cmath>
 #include <algorithm>
 
@@ -77,14 +78,18 @@ FlowMetrics FlowMonitorManager::ComputeFlowMetrics(
         : 0.0;
 
     // Throughput
-    double duration = sim_duration_s;
+    // Flow duration: use actual flow time if available,
+    // else fall back to sim duration
+    double flow_dur = sim_duration_s;
     if (stats.timeLastRxPacket > stats.timeFirstTxPacket) {
-        duration = (stats.timeLastRxPacket -
+        flow_dur = (stats.timeLastRxPacket -
                     stats.timeFirstTxPacket).GetSeconds();
+        // Cap minimum to 1s to avoid single-packet inflation
+        if (flow_dur < 1.0) flow_dur = sim_duration_s;
     }
-    fm.flow_duration_s = duration;
-    fm.throughput_kbps = (duration > 0)
-        ? (stats.rxBytes * 8.0) / (duration * 1000.0)
+    fm.flow_duration_s = flow_dur;
+    fm.throughput_kbps = (flow_dur > 0)
+        ? (stats.rxBytes * 8.0) / (flow_dur * 1000.0)
         : 0.0;
 
     // Delay
@@ -136,27 +141,24 @@ FlowMetrics FlowMonitorManager::ComputeFlowMetrics(
 utils::u32 FlowMonitorManager::GetClusterFromAddr(
     const Ipv4Address& addr) const
 {
-    // PATCH: UAVs now start at wifi_interfaces index WIFI_UAV_BASE (=3)
-    // SKDCs are at indices 0,1,2
-    // Jammer is at index 21
+    // Layout: wifi_interfaces[0..2]=SKDC0-2, [3..20]=UAV0-17, [21]=Jammer
+    constexpr utils::u32 INVALID =
+        std::numeric_limits<utils::u32>::max();
+    uint32_t n = m_topo.wifi_interfaces.GetN();
 
-    // Check SKDC WiFi addresses (indices 0..2)
-    for (utils::u32 c = 0; c < 3; ++c) {
-        utils::u32 idx = TopologyResult::WIFI_SKDC_BASE + c;
-        if (m_topo.wifi_interfaces.GetAddress(idx) == addr)
-            return c;  // traffic from/to SKDC c → attribute to cluster c
+    // SKDC addresses → cluster index
+    for (utils::u32 c = 0; c < 3 && c < n; ++c) {
+        if (m_topo.wifi_interfaces.GetAddress(c) == addr)
+            return c;
     }
-
-    // Check UAV WiFi addresses (indices 3..20)
+    // UAV addresses → cluster = uav_index / 6
     for (utils::u32 i = 0; i < 18; ++i) {
-        utils::u32 idx = TopologyResult::WIFI_UAV_BASE + i;
-        if (m_topo.wifi_interfaces.GetAddress(idx) == addr)
-            return i / 6;  // UAV i → cluster i/6
+        utils::u32 idx = 3 + i;
+        if (idx < n &&
+            m_topo.wifi_interfaces.GetAddress(idx) == addr)
+            return i / 6;
     }
-
-    // Jammer (index 21) or unknown — do NOT default to cluster 0
-    // Return UINT32_MAX to signal "unclassified"
-    return UINT32_MAX;
+    return INVALID;  // jammer, CSMA, broadcast
 }
 // ===========================================================================
 // Collect metrics after simulation
@@ -198,8 +200,31 @@ void FlowMonitorManager::CollectMetrics(
             fm.dst_addr  = dst_oss.str();
             fm.src_port  = ft.sourcePort;
             fm.dst_port  = ft.destinationPort;
-            fm.cluster_id = GetClusterFromAddr(
-                ft.sourceAddress);
+            {
+                constexpr utils::u32 INV =
+                    std::numeric_limits<utils::u32>::max();
+                utils::u32 sc =
+                    GetClusterFromAddr(ft.sourceAddress);
+                utils::u32 dc =
+                    GetClusterFromAddr(ft.destinationAddress);
+                // Skip flows where neither endpoint is UAV/SKDC
+                if (sc == INV && dc == INV) {
+                    NS_LOG_UNCOND("[FLOW_SKIP] fid=" << fid
+                        << " neither endpoint is UAV/SKDC");
+                    continue;
+                }
+                // Prefer src cluster (data UAV→SKDC)
+                // fall back to dst cluster (MTK SKDC→UAV)
+                fm.cluster_id = (sc != INV) ? sc : dc;
+                NS_LOG_UNCOND("[FLOW_ATTR] fid=" << fid
+                    << " C=" << fm.cluster_id
+                    << " src=" << fm.src_addr
+                    << " dst=" << fm.dst_addr
+                    << " tp=" << fm.throughput_kbps
+                    << "kbps pdr=" << fm.pdr
+                    << " tx=" << fm.tx_packets
+                    << " rx=" << fm.rx_packets);
+            }
         }
 
         m_flow_metrics.push_back(fm);
