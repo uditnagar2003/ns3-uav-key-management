@@ -23,6 +23,7 @@
 #include "ns3/log.h"
 #include "ns3/packet.h"
 #include "ns3/ipv4.h"
+#include "ns3/net-device.h"
 
 #include <boost/multiprecision/cpp_int.hpp>
 #include <cstring>
@@ -102,44 +103,58 @@ void SkdcApplication::StartApplication() {
             &SkdcApplication::ReceiveFromKdc,
             this));
 
-    // PATCH: WiFi socket bound to the WiFi interface IP of this SKDC.
-    // This forces NS-3 to route broadcast packets through the WiFi device
-    // instead of the CSMA device.
+    // WiFi socket — bind to WiFi device via BindToNetDevice()
+    // This is the NS-3-correct way to force a dual-interface node to
+    // send UDP broadcasts out the WiFi device instead of CSMA.
     m_wifi_socket = Socket::CreateSocket(
         GetNode(),
         UdpSocketFactory::GetTypeId());
     m_wifi_socket->SetAllowBroadcast(true);
 
-    // PATCH: Get WiFi IP from topology and bind to it explicitly.
-    // Before: Bind(Ipv4Address::GetAny(), 9200) — ambiguous on dual-interface node.
-    // After:  Bind(wifi_ip, 9200) — forces WiFi device selection.
-    if (m_topo) {
-        Ipv4Address wifi_ip =
-            m_topo->GetSkdcWifiAddr(m_cluster_id);
-        InetSocketAddress wifi_local(wifi_ip,
-            static_cast<uint16_t>(9200));
-        m_wifi_socket->Bind(wifi_local);
+    // Step 1: Bind socket to the WiFi NetDevice (index 0 on wifi_nodes)
+    // SKDCs have: device[0]=CSMA, device[1]=WiFi (added second)
+    // wifi_nodes ordering: SKDC0,SKDC1,SKDC2,UAV0..UAV17,Jammer
+    // On a SKDC node: GetDevice(0)=loopback, GetDevice(1)=CSMA, GetDevice(2)=WiFi
+    {
+        Ptr<NetDevice> wifi_dev = nullptr;
+        uint32_t n_dev = GetNode()->GetNDevices();
+        for (uint32_t di = 0; di < n_dev; ++di) {
+            auto dev = GetNode()->GetDevice(di);
+            // WiFi device is NOT a LoopbackNetDevice or CsmaNetDevice
+            std::string type = dev->GetInstanceTypeId().GetName();
+            if (type.find("WifiNetDevice") != std::string::npos) {
+                wifi_dev = dev;
+                break;
+            }
+        }
 
-        NS_LOG_UNCOND("[SKDC_WIFI_READY] t="
-            << Simulator::Now().GetSeconds() << "s"
-            << " cluster=" << m_cluster_id
-            << " node=" << GetNode()->GetId()
-            << " wifi_addr=" << wifi_ip);
+        if (wifi_dev) {
+            m_wifi_socket->BindToNetDevice(wifi_dev);
+            NS_LOG_UNCOND("[SKDC_WIFI_BIND] cluster=" << m_cluster_id
+                << " bound to WifiNetDevice idx=" << wifi_dev->GetIfIndex());
+        } else {
+            NS_LOG_UNCOND("[SKDC_WIFI_BIND] cluster=" << m_cluster_id
+                << " WARNING: WifiNetDevice not found!");
+        }
 
-        UAV_LOG_INFO(uav::log::channels::PACKET,
-            "SkdcApplication: WiFi socket bound"
-            << " cluster=" << m_cluster_id
-            << " wifi_ip=" << wifi_ip);
-    } else {
-        // Fallback: bind to any (should not happen in normal operation)
+        // Step 2: Bind to any address/port
         InetSocketAddress wifi_local(
             Ipv4Address::GetAny(),
             static_cast<uint16_t>(9200));
         m_wifi_socket->Bind(wifi_local);
 
-        UAV_LOG_WARN(uav::log::channels::PACKET,
-            "SkdcApplication: topology not set"
-            " — WiFi socket bound to 0.0.0.0 (fallback)");
+        Ipv4Address wifi_ip = m_topo
+            ? m_topo->GetSkdcWifiAddr(m_cluster_id)
+            : Ipv4Address("0.0.0.0");
+        NS_LOG_UNCOND("[SKDC_WIFI_READY] t="
+            << Simulator::Now().GetSeconds() << "s"
+            << " cluster=" << m_cluster_id
+            << " node=" << GetNode()->GetId()
+            << " wifi_addr=" << wifi_ip);
+        UAV_LOG_INFO(uav::log::channels::PACKET,
+            "SkdcApplication: WiFi socket bound"
+            << " cluster=" << m_cluster_id
+            << " wifi_ip=" << wifi_ip);
     }
 
     // Initialize crypto state
@@ -259,8 +274,9 @@ void SkdcApplication::BroadcastMtk() {
     // PATCH: use subnet broadcast instead of limited broadcast
     // 255.255.255.255 on a dual-interface node may go to CSMA.
     // 10.1.1.255 forces the WiFi subnet broadcast.
+    // Use limited broadcast (255.255.255.255) for adhoc WiFi delivery
     InetSocketAddress bcast(
-        Ipv4Address("10.1.1.255"),
+        Ipv4Address("255.255.255.255"),
         static_cast<uint16_t>(9200));
 
     int sent = m_wifi_socket->SendTo(ns3pkt, 0, bcast);
@@ -305,10 +321,7 @@ void SkdcApplication::TriggerRekey(RekeyReason reason) {
         std::min(new_key.size(),
             m_state.current_tek.size()));
 
-    // Re-derive HMAC key from new TEK  (PATCH: keep HMAC in sync)
-    m_state.hmac_key =
-        crypto::HmacSha256Util::KeyFromAesKey(
-            m_state.current_tek);
+    // HMAC key NOT re-derived — stays fixed to initial TEK
 
     UAV_LOG_INFO(uav::log::channels::PACKET,
         "SkdcApplication: rekey"

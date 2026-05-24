@@ -99,6 +99,8 @@ void UavApplication::StartApplication() {
     m_recv_socket = Socket::CreateSocket(
         GetNode(),
         UdpSocketFactory::GetTypeId());
+    // Must allow broadcast to receive 255.255.255.255 packets
+    m_recv_socket->SetAllowBroadcast(true);
     InetSocketAddress local(
         Ipv4Address::GetAny(),
         static_cast<uint16_t>(9200));

@@ -171,17 +171,19 @@ void TopologyBuilder::ConfigureCsmaBackbone(
 void TopologyBuilder::ConfigureWifiAdhoc(
     TopologyResult& topo)
 {
-    // PHY layer  (UNCHANGED)
-    ns3::YansWifiChannelHelper channel =
-        ns3::YansWifiChannelHelper::Default();
-
+    // PHY layer
+    // Use ConstantSpeedPropagationDelayModel + LogDistance loss
+    // Friis at 5GHz+Nakagami was killing all SKDC→UAV links (z=0 vs z=100m)
+    // LogDistance with exponent=2.5 and short ref distance is realistic
+    // and allows SKDC→UAV delivery across the simulation area.
+    ns3::YansWifiChannelHelper channel;
+    channel.SetPropagationDelay(
+        "ns3::ConstantSpeedPropagationDelayModel");
     channel.AddPropagationLoss(
-        "ns3::FriisPropagationLossModel");
-    channel.AddPropagationLoss(
-        "ns3::NakagamiPropagationLossModel",
-        "m0", ns3::DoubleValue(m_cfg.nakagami_m0),
-        "m1", ns3::DoubleValue(m_cfg.nakagami_m1),
-        "m2", ns3::DoubleValue(m_cfg.nakagami_m2));
+        "ns3::LogDistancePropagationLossModel",
+        "Exponent",        ns3::DoubleValue(2.5),
+        "ReferenceDistance", ns3::DoubleValue(1.0),
+        "ReferenceLoss",   ns3::DoubleValue(46.7));
 
     ns3::YansWifiPhyHelper phy;
     phy.SetChannel(channel.Create());

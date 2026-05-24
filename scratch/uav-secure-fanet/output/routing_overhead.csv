@@ -1,6 +1,6 @@
 metric,value
-total_ctrl_bytes,24840
+total_ctrl_bytes,4140
 total_data_bytes,132
-overhead_ratio,0.994714
+overhead_ratio,0.969101
 ctrl_bytes_per_sec,828
-sim_duration_s,30
+sim_duration_s,5
