@@ -52,6 +52,7 @@
 #include "apps/uav-jammer-attack-handler.h"
 
 #include "visualization/uav-netanim.h"
+#include "visualization/uav-netanim-enhancer.h"
 #include "visualization/uav-pyviz.h"
 #include "visualization/uav-node-color.h"
 #include "visualization/uav-packet-viz.h"
@@ -456,10 +457,22 @@ int main(int argc, char* argv[])
         &topo, &netanim);
     if (enable_anim) evt_ann.Initialize();
 
+    // Enhanced NetAnim visualization
+    visualization::NetAnimEnhancer enhancer(
+        &topo, &netanim, &color_mgr,
+        &pkt_viz, &evt_ann);
+    if (enable_anim) {
+        enhancer.Initialize();
+        enhancer.SchedulePeriodicLabelUpdate(1.0);
+        enhancer.HookJammerManager(&jammer_mgr, 2.0);
+    }
+
     // Annotate initial MT_K broadcasts
     for (uint32_t c = 0; c < NUM_CLUSTERS; ++c) {
         pkt_viz.OnMtkBroadcast(c, c, 1);
         evt_ann.OnRekey(c);
+        if (enable_anim)
+            enhancer.OnMtkBroadcast(c, c, 1);
     }
 
     // -----------------------------------------------------------------------

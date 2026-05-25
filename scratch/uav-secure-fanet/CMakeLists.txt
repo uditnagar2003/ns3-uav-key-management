@@ -59,6 +59,7 @@ set(uav_sources
     visualization/uav-node-color.cc
     visualization/uav-packet-viz.cc
     visualization/uav-event-annotations.cc
+    visualization/uav-netanim-enhancer.cc
     metrics/uav-throughput-metrics.cc
     metrics/uav-delay-metrics.cc
     metrics/uav-pdr-metrics.cc
@@ -67,6 +68,7 @@ set(uav_sources
     metrics/uav-sinr-metrics.cc
     metrics/uav-csv-export.cc
     metrics/uav-pcap-export.cc
+    metrics/uav-timing-profiler.cc
     scenario/rekey_perf_scenario.cc
 )
 

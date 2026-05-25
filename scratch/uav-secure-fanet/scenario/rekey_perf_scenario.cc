@@ -35,6 +35,12 @@
 #include "apps/uav-leave-event.h"
 #include "apps/uav-rekey-manager.h"
 #include "apps/uav-compromise-detector.h"
+#include "crypto/uav-crt-manager.h"
+#include "visualization/uav-netanim-enhancer.h"
+#include "metrics/uav-timing-profiler.h"
+#include "visualization/uav-node-color.h"
+#include "visualization/uav-packet-viz.h"
+#include "visualization/uav-event-annotations.h"
 #include "crypto/uav-crypto-params.h"
 #include "crypto/uav-openssl-ctx.h"
 #include "mobility/uav-mobility-manager.h"
@@ -54,6 +60,7 @@
 #include <map>
 #include <string>
 #include <algorithm>
+#include <cstdlib>
 #include <numeric>
 #include <sys/stat.h>
 
@@ -174,6 +181,22 @@ void RekeyPerfScenario::RunAll()
     NS_LOG_UNCOND("[SCENARIO] All runs complete. "
         << "Results: " << m_cfg.output_dir
         << "/scalability.csv");
+
+    // Auto-generate graphs after all runs
+    std::string graph_cmd =
+        "python3 " + std::string(
+        "/home/udit/ns-allinone-3.43/ns-3.43"
+        "/scratch/uav-secure-fanet/graphs/plot_rekey_perf.py")
+        + " --input " + m_cfg.output_dir
+        + " --output " + m_cfg.output_dir + "/graphs"
+        + " 2>/dev/null";
+    int ret = std::system(graph_cmd.c_str());
+    if (ret == 0)
+        NS_LOG_UNCOND("[SCENARIO] Graphs generated: "
+            << m_cfg.output_dir << "/graphs/");
+    else
+        NS_LOG_UNCOND("[SCENARIO] Run graph script manually: "
+            "python3 graphs/plot_rekey_perf.py");
 }
 
 // ===========================================================================
@@ -191,6 +214,7 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
     m_total_handovers   = 0;
     m_rekey_timestamps.clear();
     m_sinr_samples.clear();
+    uav::metrics::TimingProfiler::Instance().Reset();
 
     RngSeedManager::SetSeed(seed);
 
@@ -206,8 +230,14 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
     // --------------------------------------------------------
     OpenSSLInit::Bootstrap();
 
-    crypto::CryptoParamsFile params =
-        crypto::CryptoParamsLoader::LoadFromFile(CRYPTO_JSON);
+    crypto::CryptoParamsFile params;
+    {
+        uav::metrics::ScopeTimer _t;
+        params = crypto::CryptoParamsLoader::LoadFromFile(CRYPTO_JSON);
+        uav::metrics::TimingProfiler::Instance()
+            .RecordCrypto("CRT_LOAD_PARAMS", 0, 0,
+                _t.ElapsedUs(), actual_n);
+    }
 
     // --------------------------------------------------------
     // Use existing TopologyBuilder for correct node setup
@@ -386,8 +416,14 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
     apps::CompromiseDetector comp_det(
         &topo, &mc_mgr, &dist_mgr, &tek_mgr, &leave_mgr);
 
-    // Initial MTK broadcast
-    dist_mgr.BroadcastAll(skdc_apps);
+    // Initial MTK broadcast + MTokenGen timing
+    {
+        uav::metrics::ScopeTimer _t;
+        dist_mgr.BroadcastAll(skdc_apps);
+        uav::metrics::TimingProfiler::Instance()
+            .RecordCrypto("MTK_MTOKEN_GEN", 0, 0,
+                _t.ElapsedUs(), actual_n);
+    }
     dist_mgr.ScheduleRefresh(skdc_apps);
 
     // Periodic rekey every 60s
@@ -400,6 +436,19 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
     // --------------------------------------------------------
     rekey_mgr.SetRekeyCallback(
         [&, anim](const apps::RekeyEvent& ev) {
+            // Record in timing profiler
+            uav::metrics::NetworkEventRecord per;
+            per.event_type = "REKEY";
+            per.uav_id     = ev.cluster_id;
+            per.cluster_id = ev.cluster_id;
+            per.trigger_s  = ev.time_s;
+            per.complete_s = ev.time_s +
+                ev.latency_ms/1000.0;
+            per.latency_ms = ev.latency_ms;
+            per.details    =
+                apps::RekeyReasonStr(ev.reason);
+            uav::metrics::TimingProfiler::Instance()
+                .RecordNetworkEvent(per);
             ++m_total_rekeys;
             double t = Simulator::Now().GetSeconds();
             m_rekey_timestamps.push_back(t);
@@ -455,13 +504,24 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
                 uint32_t c = uid / uavs_per_cluster;
                 if (c >= 3) return;
                 ++m_total_joins;
-                join_mgr.ProcessJoin(
-                    uid, uid % uavs_per_cluster,
-                    c, skdc_apps[c].operator->(),
-                    nullptr);
+                uav::metrics::TimingProfiler::Instance()
+                    .RecordEventStart("JOIN", uid, c);
+                {
+                    uav::metrics::ScopeTimer _sd_t;
+                    join_mgr.ProcessJoin(
+                        uid, uid % uavs_per_cluster,
+                        c, skdc_apps[c].operator->(),
+                        nullptr);
+                    uav::metrics::TimingProfiler::Instance()
+                        .RecordCrypto("SLAVE_KEY_ASSIGN",
+                            uid, c,
+                            _sd_t.ElapsedUs(), 0);
+                }
                 event_csv << t << ",JOIN,"
                     << uid << "," << c
                     << ",ok\n";
+                uav::metrics::TimingProfiler::Instance()
+                    .RecordEventComplete("JOIN", uid, "ok");
                 if (anim &&
                     uid < topo.uav_nodes.GetN()) {
                     anim->UpdateLinkDescription(
@@ -489,6 +549,8 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
                 uint32_t c = uid / uavs_per_cluster;
                 if (c >= 3) return;
                 ++m_total_leaves;
+                uav::metrics::TimingProfiler::Instance()
+                    .RecordEventStart("LEAVE", uid, c);
                 leave_mgr.ProcessLeave(
                     uid, uid % uavs_per_cluster,
                     c, skdc_apps[c].operator->());
@@ -630,6 +692,13 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
             + "_run" + std::to_string(run_idx) + ".xml";
         flowmon->SerializeToXmlFile(fm_file, true, true);
     }
+
+    // Export timing profiler CSVs
+    std::string prof_dir = m_cfg.output_dir + "/csv";
+    uav::metrics::TimingProfiler::Instance()
+        .ExportAllCsv(prof_dir);
+    uav::metrics::TimingProfiler::Instance()
+        .PrintSummary();
 
     // Rekey latency from history
     const auto& rk_hist = rekey_mgr.GetHistory();

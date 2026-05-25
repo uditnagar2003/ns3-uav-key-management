@@ -136,7 +136,6 @@ AesGcmResult AesGcm::Encrypt(
     auto iv = OpenSSLRand::RandomGcmIv();
     return DoEncrypt(key, iv, plaintext, aad);
 }
-
 AesGcmResult AesGcm::EncryptWithIv(
     const AesGcmKey&                    key,
     const std::array<utils::u8, 12>&    iv,
