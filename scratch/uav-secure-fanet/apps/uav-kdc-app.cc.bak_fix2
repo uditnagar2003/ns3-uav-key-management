@@ -1,0 +1,417 @@
+/**
+ * apps/uav-kdc-app.cc
+ * Module 35 - KDC Application
+ */
+
+#include "apps/uav-kdc-app.h"
+#include "utils/uav-logger.h"
+#include "utils/uav-log-channels.h"
+#include "utils/uav-time-utils.h"
+#include "crypto/uav-hmac.h"
+#include "crypto/uav-aes.h"
+
+#include "ns3/udp-socket-factory.h"
+#include "ns3/inet-socket-address.h"
+#include "ns3/simulator.h"
+#include "ns3/log.h"
+#include "ns3/packet.h"
+
+NS_LOG_COMPONENT_DEFINE("UavKdcApp");
+
+using namespace ns3;
+using namespace uav::packet;
+
+namespace uav {
+namespace apps {
+
+// ===========================================================================
+// TypeId
+// ===========================================================================
+ns3::TypeId KdcApplication::GetTypeId() {
+    static ns3::TypeId tid =
+        ns3::TypeId("uav::apps::KdcApplication")
+        .SetParent<ns3::Application>()
+        .SetGroupName("UavSecureFanet")
+        .AddConstructor<KdcApplication>();
+    return tid;
+}
+
+// ===========================================================================
+// Constructor / Destructor
+// ===========================================================================
+KdcApplication::KdcApplication() {
+    UAV_LOG_INFO(uav::log::channels::PACKET,
+        "KdcApplication: constructed");
+}
+
+KdcApplication::~KdcApplication() = default;
+
+// ===========================================================================
+// Configuration
+// ===========================================================================
+void KdcApplication::SetTopology(
+    const routing::TopologyResult* topo)
+{
+    m_topo = topo;
+}
+
+void KdcApplication::SetCryptoParams(
+    const crypto::CryptoParamsFile* params)
+{
+    m_params = params;
+}
+
+// ===========================================================================
+// StartApplication
+// ===========================================================================
+void KdcApplication::StartApplication() {
+    UAV_LOG_INFO(uav::log::channels::PACKET,
+        "KdcApplication: starting on node "
+        << GetNode()->GetId());
+
+    // Create UDP socket
+    m_socket = Socket::CreateSocket(
+        GetNode(),
+        UdpSocketFactory::GetTypeId());
+
+    InetSocketAddress local(
+        Ipv4Address::GetAny(),
+        static_cast<uint16_t>(9000));
+    m_socket->Bind(local);
+
+    // Initialize crypto state
+    InitializeClusters();
+
+    // Packet manager initialized on demand
+
+    // Telemetry receive socket — SKDCs forward encrypted UAV telemetry
+    m_telemetry_socket = Socket::CreateSocket(
+        GetNode(),
+        UdpSocketFactory::GetTypeId());
+    InetSocketAddress tel_local(
+        Ipv4Address::GetAny(),
+        static_cast<uint16_t>(9300));
+    m_telemetry_socket->Bind(tel_local);
+    m_telemetry_socket->SetRecvCallback(
+        MakeCallback(
+            &KdcApplication::ReceiveTelemetryFromSkdc,
+            this));
+    NS_LOG_UNCOND("[KDC_TEL_READY] listening on port 9300");
+
+    // Schedule initial TEK distribution
+    Simulator::Schedule(
+        Seconds(1.0),
+        &KdcApplication::SendTekToAllSkdcs,
+        this);
+
+    // Schedule periodic sync
+    SchedulePeriodicSync();
+
+    UAV_LOG_INFO(uav::log::channels::PACKET,
+        "KdcApplication: started"
+        " clusters=" << m_clusters.size());
+}
+
+// ===========================================================================
+// StopApplication
+// ===========================================================================
+void KdcApplication::StopApplication() {
+    if (m_socket) {
+        m_socket->Close();
+        m_socket = nullptr;
+    }
+    if (m_telemetry_socket) {
+        m_telemetry_socket->Close();
+        m_telemetry_socket = nullptr;
+    }
+    UAV_LOG_INFO(uav::log::channels::PACKET,
+        "KdcApplication: stopped"
+        " tx=" << m_tx_count
+        << " rekeys=" << m_rekey_count);
+}
+
+// ===========================================================================
+// InitializeClusters
+// ===========================================================================
+void KdcApplication::InitializeClusters() {
+    for (utils::u32 c = 0; c < 3; ++c) {
+        m_clusters[c].cluster_id    = c;
+        m_clusters[c].skdc_node     = c + 1;
+        m_clusters[c].rekey_version = 1;
+        m_clusters[c].member_count  = 6;
+
+        if (m_params &&
+            c < m_params->clusters.size())
+        {
+            m_clusters[c].current_tek =
+                m_params->clusters[c].tek;
+            m_clusters[c].current_mt_k =
+                m_params->clusters[c].MT_K;
+            m_clusters[c].initialized = true;
+        }
+
+        if (m_topo) {
+            m_clusters[c].skdc_addr =
+                m_topo->csma_interfaces
+                      .GetAddress(c + 1);
+        }
+
+        UAV_LOG_INFO(uav::log::channels::PACKET,
+            "KdcApplication: cluster " << c
+            << " initialized"
+            << " skdc=" << m_clusters[c].skdc_addr
+            << " version="
+            << m_clusters[c].rekey_version);
+    }
+}
+
+// ===========================================================================
+// SendTekToSkdc
+// ===========================================================================
+void KdcApplication::SendTekToSkdc(
+    utils::u32 cluster)
+{
+    if (!m_socket || !m_topo) return;
+    if (cluster >= 3) return;
+
+    auto& cs = m_clusters[cluster];
+    SendControlPacket(
+        cs.skdc_addr, cluster, cs.current_tek);
+
+    ++m_tx_count;
+    UAV_LOG_INFO(uav::log::channels::PACKET,
+        "KdcApplication: TEK sent to SKDC"
+        << cluster
+        << " addr=" << cs.skdc_addr
+        << " version=" << cs.rekey_version);
+}
+
+void KdcApplication::SendTekToAllSkdcs() {
+    for (utils::u32 c = 0; c < 3; ++c)
+        SendTekToSkdc(c);
+}
+
+// ===========================================================================
+// TriggerRekey
+// ===========================================================================
+void KdcApplication::TriggerRekey(
+    utils::u32 cluster,
+    packet::RekeyReason reason)
+{
+    if (cluster >= 3) return;
+
+    auto& cs = m_clusters[cluster];
+    ++cs.rekey_version;
+    ++m_rekey_count;
+
+    // Generate new TEK
+    cs.current_tek = crypto::AesGcm::GenerateKey();
+
+    UAV_LOG_INFO(uav::log::channels::PACKET,
+        "KdcApplication: rekey cluster="
+        << cluster
+        << " reason=" << packet::RekeyReasonToString(reason)
+        << " version=" << cs.rekey_version);
+
+    // Distribute new TEK to SKDC
+    SendTekToSkdc(cluster);
+}
+
+// ===========================================================================
+// Getters
+// ===========================================================================
+const crypto::AesGcmKey& KdcApplication::GetTek(
+    utils::u32 cluster) const
+{
+    static crypto::AesGcmKey empty{};
+    if (cluster >= 3) return empty;
+    return m_clusters[cluster].current_tek;
+}
+
+const KdcClusterState& KdcApplication::GetClusterState(
+    utils::u32 cluster) const
+{
+    static KdcClusterState empty{};
+    if (cluster >= 3) return empty;
+    return m_clusters[cluster];
+}
+
+// ===========================================================================
+// Periodic sync
+// ===========================================================================
+void KdcApplication::SchedulePeriodicSync() {
+    // Sync every 30 seconds
+    Simulator::Schedule(
+        Seconds(30.0),
+        &KdcApplication::PeriodicSync,
+        this);
+}
+
+void KdcApplication::PeriodicSync() {
+    UAV_LOG_INFO(uav::log::channels::PACKET,
+        "KdcApplication: periodic sync t="
+        << Simulator::Now().GetSeconds());
+
+    SendTekToAllSkdcs();
+    SchedulePeriodicSync();
+}
+
+// ===========================================================================
+// SendControlPacket — UDP to SKDC
+// ===========================================================================
+void KdcApplication::SendControlPacket(
+    Ipv4Address dst,
+    utils::u32 cluster,
+    const crypto::AesGcmKey& tek)
+{
+    if (!m_socket) return;
+
+    // Create minimal control payload
+    // [cluster(4)][version(4)][tek_first8(8)]
+    utils::ByteBuffer payload(16, 0x00);
+    utils::ByteUtils::WriteU32BE(
+        payload.data(), cluster);
+    utils::ByteUtils::WriteU32BE(
+        payload.data() + 4,
+        m_clusters[cluster].rekey_version);
+    std::memcpy(payload.data() + 8,
+        tek.data(), 8);
+
+    Ptr<Packet> pkt = Create<Packet>(
+        payload.data(),
+        static_cast<uint32_t>(payload.size()));
+
+    InetSocketAddress remote(dst,
+        static_cast<uint16_t>(9001));
+    m_socket->SendTo(pkt, 0, remote);
+}
+
+// ===========================================================================
+// ReceiveTelemetryFromSkdc
+// Receives AES-TEK-encrypted telemetry forwarded by SKDC on port 9300.
+// Decrypts using cluster TEK, logs plaintext, writes to telemetry CSV.
+// ===========================================================================
+void KdcApplication::ReceiveTelemetryFromSkdc(
+    ns3::Ptr<ns3::Socket> socket)
+{
+    ns3::Ptr<ns3::Packet> pkt;
+    ns3::Address from;
+
+    while ((pkt = socket->RecvFrom(from))) {
+        ++m_telemetry_rx_count;
+
+        ns3::Ipv4Address src_ip;
+        if (ns3::InetSocketAddress::IsMatchingType(from))
+            src_ip = ns3::InetSocketAddress::ConvertFrom(from)
+                         .GetIpv4();
+
+        double t = ns3::Simulator::Now().GetSeconds();
+        uint32_t sz = pkt->GetSize();
+
+        if (sz < 36 + 32) { // min: header(36) + hmac(32)
+            NS_LOG_UNCOND("[KDC_TEL_DROP] too small: " << sz);
+            continue;
+        }
+
+        utils::ByteBuffer wire(sz);
+        pkt->CopyData(wire.data(), sz);
+
+        // Verify HMAC (last 32 bytes)
+        utils::ByteBuffer pkt_data(
+            wire.begin(), wire.end() - 32);
+        utils::ByteBuffer recv_hmac(
+            wire.end() - 32, wire.end());
+
+        // Find cluster id from first 4 bytes
+        uint32_t cid =
+            utils::ByteUtils::ReadU32BE(pkt_data.data());
+        if (cid >= 3) {
+            NS_LOG_UNCOND("[KDC_TEL_DROP] bad cluster=" << cid);
+            continue;
+        }
+
+        // Verify HMAC using cluster TEK-derived key
+        // Build hmac key same way SKDC does: KeyFromAesKey(TEK)
+        auto hmac_key = crypto::HmacSha256Util::KeyFromAesKey(
+            m_clusters[cid].current_tek);
+
+        bool hmac_ok = false;
+        try {
+            hmac_ok = crypto::HmacSha256Util::Verify(
+                hmac_key, pkt_data, recv_hmac);
+        } catch (...) { hmac_ok = false; }
+
+        if (!hmac_ok) {
+            NS_LOG_UNCOND("[KDC_TEL_DROP] HMAC fail"
+                << " cluster=" << cid
+                << " from=" << src_ip);
+            continue;
+        }
+
+        // Decrypt: layout [cluster 4B][iv 12B][tag 16B][ct_len 4B][ct]
+        if (pkt_data.size() < 36) continue;
+        const uint8_t* dp = pkt_data.data();
+
+        std::array<uint8_t,12> iv{};
+        std::memcpy(iv.data(), dp + 4, 12);
+        std::array<uint8_t,16> tag{};
+        std::memcpy(tag.data(), dp + 16, 16);
+        uint32_t ct_len =
+            utils::ByteUtils::ReadU32BE(dp + 32);
+
+        if (pkt_data.size() < 36 + ct_len) {
+            NS_LOG_UNCOND("[KDC_TEL_DROP] ct truncated");
+            continue;
+        }
+        utils::ByteBuffer ct(
+            pkt_data.begin() + 36,
+            pkt_data.begin() + 36 + ct_len);
+
+        utils::ByteBuffer aad(4);
+        utils::ByteUtils::WriteU16BE(aad.data(),
+            static_cast<uint16_t>(cid));
+        utils::ByteUtils::WriteU16BE(aad.data() + 2,
+            0xFFFF);
+
+        std::string plaintext;
+        try {
+            auto pt = crypto::AesGcm::Decrypt(
+                m_clusters[cid].current_tek,
+                ct, aad, iv, tag);
+            plaintext = std::string(pt.begin(), pt.end());
+        } catch (const std::exception& e) {
+            NS_LOG_UNCOND("[KDC_TEL_DROP] decrypt fail: "
+                << e.what());
+            continue;
+        }
+
+        // Log at KDC
+        NS_LOG_UNCOND("[KDC_TELEMETRY] t=" << t
+            << " cluster=" << cid
+            << " from_skdc=" << src_ip
+            << " payload="" << plaintext << """);
+
+        UAV_LOG_INFO(uav::log::channels::PACKET,
+            "KdcApplication: telemetry received"
+            << " cluster=" << cid
+            << " payload=" << plaintext);
+
+        // Write to CSV
+        if (!m_tel_csv.is_open()) {
+            std::string csv_path =
+                std::string(UAV_OUTPUT_DIR)
+                + "/kdc_telemetry.csv";
+            m_tel_csv.open(csv_path, std::ios::app);
+            if (m_tel_csv.is_open())
+                m_tel_csv << "time_s,cluster,from_skdc,payload\n";
+        }
+        if (m_tel_csv.is_open())
+            m_tel_csv << t << ","
+                      << cid << ","
+                      << src_ip << ","
+                      << plaintext << "\n";
+    }
+}
+
+} // namespace apps
+} // namespace uav

@@ -84,6 +84,40 @@ void KdcApplication::StartApplication() {
 
     // Packet manager initialized on demand
 
+    // Load GK from crypto params
+    if (m_params && m_params->global_key_hex.size() == 64) {
+        m_gk = crypto::HandoverProtocol::HexToGlobalKey(
+            m_params->global_key_hex);
+        NS_LOG_UNCOND("[KDC_GK] Global bootstrap key loaded");
+    }
+
+    // Handover NOTIFY receive socket (port 9050)
+    m_handover_socket = Socket::CreateSocket(
+        GetNode(), UdpSocketFactory::GetTypeId());
+    InetSocketAddress ho_local(
+        Ipv4Address::GetAny(),
+        static_cast<uint16_t>(9050));
+    m_handover_socket->Bind(ho_local);
+    m_handover_socket->SetRecvCallback(
+        MakeCallback(
+            &KdcApplication::ReceiveHandoverNotify,
+            this));
+    NS_LOG_UNCOND("[KDC_HO_READY] listening on port 9050");
+
+    // Telemetry receive socket — SKDCs forward encrypted UAV telemetry
+    m_telemetry_socket = Socket::CreateSocket(
+        GetNode(),
+        UdpSocketFactory::GetTypeId());
+    InetSocketAddress tel_local(
+        Ipv4Address::GetAny(),
+        static_cast<uint16_t>(9300));
+    m_telemetry_socket->Bind(tel_local);
+    m_telemetry_socket->SetRecvCallback(
+        MakeCallback(
+            &KdcApplication::ReceiveTelemetryFromSkdc,
+            this));
+    NS_LOG_UNCOND("[KDC_TEL_READY] listening on port 9300");
+
     // Schedule initial TEK distribution
     Simulator::Schedule(
         Seconds(1.0),
@@ -105,6 +139,14 @@ void KdcApplication::StopApplication() {
     if (m_socket) {
         m_socket->Close();
         m_socket = nullptr;
+    }
+    if (m_telemetry_socket) {
+        m_telemetry_socket->Close();
+        m_telemetry_socket = nullptr;
+    }
+    if (m_handover_socket) {
+        m_handover_socket->Close();
+        m_handover_socket = nullptr;
     }
     UAV_LOG_INFO(uav::log::channels::PACKET,
         "KdcApplication: stopped"
@@ -266,6 +308,249 @@ void KdcApplication::SendControlPacket(
     InetSocketAddress remote(dst,
         static_cast<uint16_t>(9001));
     m_socket->SendTo(pkt, 0, remote);
+}
+
+// ===========================================================================
+// ReceiveTelemetryFromSkdc
+// Receives AES-TEK-encrypted telemetry forwarded by SKDC on port 9300.
+// Decrypts using cluster TEK, logs plaintext, writes to telemetry CSV.
+// ===========================================================================
+void KdcApplication::ReceiveTelemetryFromSkdc(
+    ns3::Ptr<ns3::Socket> socket)
+{
+    ns3::Ptr<ns3::Packet> pkt;
+    ns3::Address from;
+
+    while ((pkt = socket->RecvFrom(from))) {
+        ++m_telemetry_rx_count;
+
+        ns3::Ipv4Address src_ip;
+        if (ns3::InetSocketAddress::IsMatchingType(from))
+            src_ip = ns3::InetSocketAddress::ConvertFrom(from)
+                         .GetIpv4();
+
+        double t = ns3::Simulator::Now().GetSeconds();
+        uint32_t sz = pkt->GetSize();
+
+        NS_LOG_UNCOND("[KDC_TEL_RECV] t=" << t
+            << " from=" << src_ip
+            << " size=" << sz
+            << " total=" << m_telemetry_rx_count);
+
+        if (sz < 36 + 32) {
+            NS_LOG_UNCOND("[KDC_TEL_DROP] too small: " << sz);
+            continue;
+        }
+
+        utils::ByteBuffer wire(sz);
+        pkt->CopyData(wire.data(), sz);
+
+        // Verify HMAC (last 32 bytes)
+        utils::ByteBuffer pkt_data(
+            wire.begin(), wire.end() - 32);
+        utils::ByteBuffer recv_hmac(
+            wire.end() - 32, wire.end());
+
+        // Find cluster id from first 4 bytes
+        uint32_t cid =
+            utils::ByteUtils::ReadU32BE(pkt_data.data());
+        if (cid >= 3) {
+            NS_LOG_UNCOND("[KDC_TEL_DROP] bad cluster=" << cid);
+            continue;
+        }
+
+        // Verify HMAC using cluster TEK-derived key
+        // Build hmac key same way SKDC does: KeyFromAesKey(TEK)
+        auto hmac_key = crypto::HmacSha256Util::KeyFromAesKey(
+            m_clusters[cid].current_tek);
+
+        bool hmac_ok = false;
+        try {
+            hmac_ok = crypto::HmacSha256Util::Verify(
+                hmac_key, pkt_data, recv_hmac);
+        } catch (...) { hmac_ok = false; }
+
+        if (!hmac_ok) {
+            NS_LOG_UNCOND("[KDC_TEL_DROP] HMAC fail"
+                << " cluster=" << cid
+                << " from=" << src_ip);
+            continue;
+        }
+
+        // Decrypt: layout [cluster 4B][iv 12B][tag 16B][ct_len 4B][ct]
+        if (pkt_data.size() < 36) continue;
+        const uint8_t* dp = pkt_data.data();
+
+        std::array<uint8_t,12> iv{};
+        std::memcpy(iv.data(), dp + 4, 12);
+        std::array<uint8_t,16> tag{};
+        std::memcpy(tag.data(), dp + 16, 16);
+        uint32_t ct_len =
+            utils::ByteUtils::ReadU32BE(dp + 32);
+
+        if (pkt_data.size() < 36 + ct_len) {
+            NS_LOG_UNCOND("[KDC_TEL_DROP] ct truncated");
+            continue;
+        }
+        utils::ByteBuffer ct(
+            pkt_data.begin() + 36,
+            pkt_data.begin() + 36 + ct_len);
+
+        utils::ByteBuffer aad(4);
+        utils::ByteUtils::WriteU16BE(aad.data(),
+            static_cast<uint16_t>(cid));
+        utils::ByteUtils::WriteU16BE(aad.data() + 2,
+            0xFFFF);
+
+        std::string plaintext;
+        try {
+            auto pt = crypto::AesGcm::Decrypt(
+                m_clusters[cid].current_tek,
+                ct, aad, iv, tag);
+            plaintext = std::string(pt.begin(), pt.end());
+        } catch (const std::exception& e) {
+            NS_LOG_UNCOND("[KDC_TEL_DROP] decrypt fail: "
+                << e.what());
+            continue;
+        }
+
+        // Log at KDC
+        NS_LOG_UNCOND("[KDC_TELEMETRY] t=" << t
+            << " cluster=" << cid
+            << " from_skdc=" << src_ip
+            << " payload="" << plaintext << """);
+
+        UAV_LOG_INFO(uav::log::channels::PACKET,
+            "KdcApplication: telemetry received"
+            << " cluster=" << cid
+            << " payload=" << plaintext);
+
+        // Write to CSV
+        if (!m_tel_csv.is_open()) {
+            std::string csv_path =
+                std::string(UAV_OUTPUT_DIR)
+                + "/kdc_telemetry.csv";
+            m_tel_csv.open(csv_path, std::ios::app);
+            if (m_tel_csv.is_open())
+                m_tel_csv << "time_s,cluster,from_skdc,payload\n";
+        }
+        if (m_tel_csv.is_open())
+            m_tel_csv << t << ","
+                      << cid << ","
+                      << src_ip << ","
+                      << plaintext << "\n";
+    }
+}
+
+// ===========================================================================
+// ReceiveHandoverNotify — port 9050
+// Old SKDC tells KDC: "UAV X is moving to cluster Y"
+// KDC looks up new slave key params, encrypts with GK, sends to new SKDC
+// ===========================================================================
+void KdcApplication::ReceiveHandoverNotify(
+    ns3::Ptr<ns3::Socket> socket)
+{
+    ns3::Ptr<ns3::Packet> pkt;
+    ns3::Address from;
+    while ((pkt = socket->RecvFrom(from))) {
+        uint32_t sz = pkt->GetSize();
+        utils::ByteBuffer buf(sz);
+        pkt->CopyData(buf.data(), sz);
+
+        crypto::HandoverProtocol::NotifyPkt np;
+        if (!crypto::HandoverProtocol::ParseNotify(
+                buf, np, m_gk)) {
+            NS_LOG_UNCOND("[KDC_HO_DROP] HMAC fail");
+            continue;
+        }
+
+        NS_LOG_UNCOND("[KDC_HO_NOTIFY] t="
+            << ns3::Simulator::Now().GetSeconds()
+            << " uav=" << np.uav_id
+            << " old_c=" << np.old_cluster
+            << " new_c=" << np.new_cluster);
+
+        ForwardSlaveKey(
+            np.uav_id, np.new_cluster, np.old_index);
+    }
+}
+
+// ===========================================================================
+// ForwardSlaveKey — KDC → New SKDC (CSMA port 9051)
+// Looks up new cluster slave key, encrypts with GK, sends to new SKDC
+// ===========================================================================
+void KdcApplication::ForwardSlaveKey(
+    uint32_t uav_id,
+    uint32_t new_cluster,
+    uint32_t /*old_index*/)
+{
+    if (!m_params || !m_topo) return;
+    if (new_cluster >= 3) return;
+
+    // Find next available slot in new cluster
+    // Use uav_id modulo uavs_per_cluster as new index
+    // (In real deployment this would be a proper slot allocator)
+    uint32_t new_idx = uav_id %
+        m_params->uavs_per_cluster;
+
+    const auto* nc = m_params->GetCluster(new_cluster);
+    if (!nc) {
+        NS_LOG_UNCOND("[KDC_FWD_FAIL] cluster not found");
+        return;
+    }
+    const auto* sk = nc->GetSlaveKey(new_idx);
+    if (!sk) {
+        NS_LOG_UNCOND("[KDC_FWD_FAIL] slave key not found"
+            " cluster=" << new_cluster
+            << " idx=" << new_idx);
+        return;
+    }
+
+    // Build SlaveKeyBlob from BigInt params
+    crypto::SlaveKeyBlob blob;
+    blob.uav_index  = new_idx;
+    blob.cluster_id = new_cluster;
+
+    // Serialize BigInts to bytes
+    auto to_bytes = [](const crypto::BigInt& v)
+        -> utils::ByteBuffer {
+        // Export BigInt to big-endian byte buffer
+        auto hex = crypto::BigIntOps::ToHexString(v);
+        if (hex.size() % 2) hex = "0" + hex;
+        utils::ByteBuffer b(hex.size()/2);
+        for (size_t i = 0; i < b.size(); ++i)
+            b[i] = static_cast<uint8_t>(
+                std::stoul(hex.substr(i*2,2),nullptr,16));
+        return b;
+    };
+
+    blob.d_i_bytes = to_bytes(sk->d_i);
+    blob.n_i_bytes = to_bytes(sk->n_i);
+    blob.e_i_bytes = to_bytes(sk->e_i);
+    blob.Mi_bytes  = to_bytes(sk->Mi);
+    blob.Ni_bytes  = to_bytes(sk->Ni);
+
+    auto wire = crypto::HandoverProtocol::BuildSlaveFwd(
+        uav_id, new_cluster, blob, m_gk);
+
+    // Send to new SKDC CSMA address on port 9051
+    ns3::Ipv4Address skdc_addr =
+        m_topo->csma_interfaces.GetAddress(
+            new_cluster + 1);
+    ns3::InetSocketAddress dst(skdc_addr, 9051);
+    ns3::Ptr<ns3::Packet> fwd_pkt =
+        ns3::Create<ns3::Packet>(
+            wire.data(),
+            static_cast<uint32_t>(wire.size()));
+    if (m_socket)
+        m_socket->SendTo(fwd_pkt, 0, dst);
+
+    NS_LOG_UNCOND("[KDC_SLAVE_FWD] t="
+        << ns3::Simulator::Now().GetSeconds()
+        << " uav=" << uav_id
+        << " new_c=" << new_cluster
+        << " new_idx=" << new_idx
+        << " → skdc=" << skdc_addr);
 }
 
 } // namespace apps

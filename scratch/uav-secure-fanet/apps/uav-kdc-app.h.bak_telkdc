@@ -1,0 +1,145 @@
+/**
+ * apps/uav-kdc-app.h
+ * Module 35 - KDC Application
+ *
+ * KDC RESPONSIBILITIES (per project spec):
+ *   - Generate safe primes (loaded from JSON)
+ *   - Generate global CRT parameters
+ *   - Generate bootstrap SKDC decryption parameters
+ *   - Maintain global UAV membership list
+ *   - Generate TEKs
+ *   - Encrypt TEKs using SKDC master encryption domains
+ *   - Synchronize cluster states
+ *
+ * KDC operates on the CSMA backbone.
+ * KDC communicates ONLY with SKDCs (not UAVs directly).
+ *
+ * PORT: 9000 (KDC_PORT)
+ */
+
+#ifndef UAV_KDC_APP_H
+#define UAV_KDC_APP_H
+
+#include "ns3/application.h"
+#include "headers/uav-packet-enums.h"
+#include "utils/uav-types.h"
+#include "utils/uav-error.h"
+#include "utils/uav-byte-utils.h"
+#include "routing/uav-topology.h"
+#include "crypto/uav-crypto-params.h"
+#include "crypto/uav-crt-manager.h"
+#include "crypto/uav-aes.h"
+#include "crypto/uav-hmac.h"
+#include "ns3/socket.h"
+#include "ns3/inet-socket-address.h"
+#include "ns3/ipv4-address.h"
+#include "ns3/packet.h"
+
+
+#include <array>
+#include <vector>
+#include <unordered_map>
+#include <string>
+
+namespace uav {
+namespace apps {
+
+// ===========================================================================
+// KdcState - per-cluster state maintained by KDC
+// ===========================================================================
+struct KdcClusterState {
+    utils::u32              cluster_id  = 0;
+    utils::u32              skdc_node   = 0;
+    ns3::Ipv4Address        skdc_addr;
+    crypto::AesGcmKey       current_tek = {};
+    crypto::BigInt          current_mt_k;
+    utils::u32              rekey_version = 1;
+    utils::u32              member_count  = 6;
+    bool                    initialized   = false;
+};
+
+// ===========================================================================
+// KdcApplication - NS-3 Application
+// ===========================================================================
+class KdcApplication : public ns3::Application {
+public:
+    static ns3::TypeId GetTypeId();
+
+    KdcApplication();
+    ~KdcApplication() override;
+
+    // -----------------------------------------------------------------------
+    // Configuration (call before StartApplication)
+    // -----------------------------------------------------------------------
+    void SetTopology(
+        const routing::TopologyResult* topo);
+
+    void SetCryptoParams(
+        const crypto::CryptoParamsFile* params);
+
+    // -----------------------------------------------------------------------
+    // KDC operations
+    // -----------------------------------------------------------------------
+
+    /// Send TEK to SKDC for cluster
+    void SendTekToSkdc(utils::u32 cluster);
+
+    /// Send TEK to all SKDCs
+    void SendTekToAllSkdcs();
+
+    /// Trigger rekey for cluster
+    void TriggerRekey(utils::u32 cluster,
+                      packet::RekeyReason reason);
+
+    /// Get current TEK for cluster
+    const crypto::AesGcmKey& GetTek(
+        utils::u32 cluster) const;
+
+    /// Get cluster state
+    const KdcClusterState& GetClusterState(
+        utils::u32 cluster) const;
+
+    // -----------------------------------------------------------------------
+    // Stats
+    // -----------------------------------------------------------------------
+    utils::u64 GetTotalPacketsSent() const {
+        return m_tx_count;
+    }
+    utils::u64 GetRekeyCount() const {
+        return m_rekey_count;
+    }
+
+protected:
+    void StartApplication() override;
+    void StopApplication()  override;
+
+private:
+    // NS-3 socket
+    ns3::Ptr<ns3::Socket>  m_socket;
+
+    // References
+    const routing::TopologyResult*   m_topo    = nullptr;
+    const crypto::CryptoParamsFile*  m_params  = nullptr;
+
+    // Per-cluster state
+    std::array<KdcClusterState, 3>   m_clusters;
+
+
+    // Stats
+    utils::u64  m_tx_count    = 0;
+    utils::u64  m_rekey_count = 0;
+
+    // Internal
+    void InitializeClusters();
+    void SchedulePeriodicSync();
+    void PeriodicSync();
+    void SendControlPacket(
+        ns3::Ipv4Address dst,
+        utils::u32 cluster,
+        const crypto::AesGcmKey& tek);
+};
+
+} // namespace apps
+} // namespace uav
+
+#endif // UAV_KDC_APP_H

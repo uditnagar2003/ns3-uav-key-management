@@ -1,0 +1,167 @@
+/**
+ * apps/uav-skdc-app.h
+ * Module 36 - SKDC Application
+ *
+ * SKDC RESPONSIBILITIES (per project spec):
+ *   - Generate local CRT master encryption key
+ *   - Generate UAV slave decryption keys
+ *   - Manage multicast cluster domain
+ *   - Broadcast MT_K to UAV cluster
+ *   - Manage join/leave rekeying
+ *   - Handle secure UAV handover
+ *   - Manage TEK synchronization
+ *
+ * Each SKDC manages one cluster (0,1,2).
+ * SKDC communicates with:
+ *   - KDC via CSMA (receives TEK)
+ *   - UAVs via WiFi adhoc (broadcasts MT_K)
+ *
+ * PORTS:
+ *   Listen: 9001 (SKDC_PORT) on CSMA for KDC
+ *   Send:   9200 (MTK_PORT)  on WiFi to UAVs
+ */
+
+#ifndef UAV_SKDC_APP_H
+#define UAV_SKDC_APP_H
+
+#include "ns3/application.h"
+#include "ns3/socket.h"
+#include "ns3/ipv4-address.h"
+#include "ns3/packet.h"
+
+#include "headers/uav-packet-enums.h"
+#include "headers/uav-mtk-packet.h"
+#include "headers/uav-rekey-packet.h"
+#include "routing/uav-topology.h"
+#include "crypto/uav-crypto-params.h"
+#include "crypto/uav-crt-manager.h"
+#include "crypto/uav-aes.h"
+#include "crypto/uav-hmac.h"
+#include "crypto/uav-replay.h"
+#include "utils/uav-types.h"
+#include "utils/uav-error.h"
+
+#include <array>
+#include <vector>
+#include <unordered_set>
+
+namespace uav {
+namespace apps {
+
+// ===========================================================================
+// SkdcState - SKDC operational state
+// ===========================================================================
+struct SkdcState {
+    utils::u32          cluster_id     = 0;
+    utils::u32          rekey_version  = 1;
+    crypto::AesGcmKey   current_tek    = {};
+    crypto::HmacKey     hmac_key       = {};
+    crypto::BigInt      mt_k;
+    crypto::BigInt      n_group;
+    crypto::BigInt      e_mk;
+    bool                tek_received   = false;
+    std::unordered_set<utils::u32> members;
+};
+
+// ===========================================================================
+// SkdcApplication - NS-3 Application
+// ===========================================================================
+class SkdcApplication : public ns3::Application {
+public:
+    static ns3::TypeId GetTypeId();
+
+    SkdcApplication();
+    ~SkdcApplication() override;
+
+    // -----------------------------------------------------------------------
+    // Configuration
+    // -----------------------------------------------------------------------
+    void SetClusterId(utils::u32 cluster_id);
+
+    void SetTopology(
+        const routing::TopologyResult* topo);
+
+    void SetCryptoParams(
+        const crypto::CryptoParamsFile* params);
+
+    // -----------------------------------------------------------------------
+    // SKDC operations
+    // -----------------------------------------------------------------------
+
+    /// Broadcast MT_K to all UAVs in cluster
+    void BroadcastMtk();
+
+    /// Process UAV join request
+    void ProcessJoin(utils::u32 uav_id,
+                     utils::u32 uav_index);
+
+    /// Process UAV leave
+    void ProcessLeave(utils::u32 uav_id);
+
+    /// Update TEK from KDC
+    void UpdateTek(const crypto::AesGcmKey& tek);
+
+    /// Trigger rekey broadcast
+    void TriggerRekey(packet::RekeyReason reason);
+
+    // -----------------------------------------------------------------------
+    // Accessors
+    // -----------------------------------------------------------------------
+    const SkdcState& GetState() const {
+        return m_state;
+    }
+    utils::u64 GetMtkBroadcastCount() const {
+        return m_mtk_count;
+    }
+    utils::u64 GetRekeyCount() const {
+        return m_rekey_count;
+    }
+    utils::u64 GetDataRxCount() const {
+        return m_data_rx_count;
+    }
+    utils::u32 GetMemberCount() const {
+        return static_cast<utils::u32>(
+            m_state.members.size());
+    }
+
+protected:
+    void StartApplication() override;
+    void StopApplication()  override;
+
+private:
+    utils::u32 m_cluster_id = 0;
+
+    const routing::TopologyResult*  m_topo   = nullptr;
+    const crypto::CryptoParamsFile* m_params = nullptr;
+
+    SkdcState m_state;
+
+    // Sockets
+    ns3::Ptr<ns3::Socket> m_csma_socket;  // recv from KDC
+    ns3::Ptr<ns3::Socket> m_wifi_socket;  // send to UAVs
+    ns3::Ptr<ns3::Socket> m_data_socket;  // recv DATA from UAVs (port 9100)
+
+    // Sequence counter
+    crypto::SequenceCounter m_seq;
+
+    // Stats
+    utils::u64 m_mtk_count      = 0;
+    utils::u64 m_rekey_count    = 0;
+    utils::u64 m_data_rx_count  = 0;
+
+    // Internal
+    void InitializeState();
+    void ScheduleInitialBroadcast();
+    void SchedulePeriodicBroadcast();
+    void PeriodicBroadcast();
+    void ReceiveFromKdc(
+        ns3::Ptr<ns3::Socket> socket);
+    void ReceiveDataFromUav(
+        ns3::Ptr<ns3::Socket> socket);
+    ns3::Ipv4Address GetWifiAddress() const;
+};
+
+} // namespace apps
+} // namespace uav
+
+#endif // UAV_SKDC_APP_H

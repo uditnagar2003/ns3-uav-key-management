@@ -486,6 +486,24 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
     apps::CompromiseDetector comp_det(
         &topo, &mc_mgr, &dist_mgr, &tek_mgr, &leave_mgr);
 
+    // Pass anim pointer to SKDC apps for data visualization
+    if (anim) {
+        for (uint32_t c = 0; c < num_clusters; ++c) {
+            skdc_apps[c]->SetAnimPtr(
+                anim, &topo,
+                uavs_per_cluster);
+        }
+    }
+
+    // Pass anim pointer to SKDC apps for data visualization
+    if (anim) {
+        for (uint32_t c = 0; c < num_clusters; ++c) {
+            skdc_apps[c]->SetAnimPtr(
+                anim, &topo,
+                uavs_per_cluster);
+        }
+    }
+
     // Initial MTK broadcast + MTokenGen timing
     {
         uav::metrics::ScopeTimer _t;
@@ -1027,16 +1045,52 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
                     << "→" << new_c << "\n";
                 if (anim &&
                     uid < topo.uav_nodes.GetN()) {
+                    // Step 1: Yellow flash during handover
                     anim->UpdateNodeColor(
                         topo.uav_nodes.Get(uid),
-                        255, 255, 0); // yellow
+                        255, 255, 0);
                     anim->UpdateNodeDescription(
                         topo.uav_nodes.Get(uid),
-                        "UAV" + std::to_string(uid)
-                        + "_HANDOVER_C"
-                        + std::to_string(old_c)
-                        + "→C"
-                        + std::to_string(new_c));
+                        "UAV-" + std::to_string(uid)
+                        + "\nHANDOVER"
+                        + "\nC" + std::to_string(old_c)
+                        + "→C" + std::to_string(new_c));
+
+                    // Remove old cluster link label
+                    anim->UpdateLinkDescription(
+                        topo.skdc_nodes.Get(old_c),
+                        topo.uav_nodes.Get(uid),
+                        "C" + std::to_string(old_c)
+                        + "|LEFT");
+
+                    // Step 2: After 0.5s — new cluster color
+                    Simulator::Schedule(Seconds(0.5),
+                        [=]() {
+                            // New cluster color
+                            auto& nc =
+                                CLUSTER_COLORS[
+                                    std::min(new_c,2u)];
+                            anim->UpdateNodeColor(
+                                topo.uav_nodes.Get(uid),
+                                nc.r, nc.g, nc.b);
+                            anim->UpdateNodeDescription(
+                                topo.uav_nodes.Get(uid),
+                                "UAV-" + std::to_string(uid)
+                                + "\nC" + std::to_string(new_c)
+                                + "\nJOINED");
+                            // New cluster connection line
+                            if (new_c < topo.skdc_nodes
+                                    .GetN()) {
+                                anim->UpdateLinkDescription(
+                                    topo.skdc_nodes
+                                        .Get(new_c),
+                                    topo.uav_nodes
+                                        .Get(uid),
+                                    "C"
+                                    + std::to_string(new_c)
+                                    + "|NEW_MEMBER");
+                            }
+                        });
                 }
             });
     }

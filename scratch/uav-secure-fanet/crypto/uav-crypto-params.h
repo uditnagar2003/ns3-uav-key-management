@@ -132,6 +132,7 @@ struct ClusterCryptoEntry {
 // ===========================================================================
 struct CryptoParamsFile {
     std::string  scheme;             // "MKE-MGKM"
+    std::string  global_key_hex;     // GK: 64 hex chars (32 bytes AES-256)
     utils::u32   num_clusters;
     utils::u32   uavs_per_cluster;
     utils::u32   total_uavs;

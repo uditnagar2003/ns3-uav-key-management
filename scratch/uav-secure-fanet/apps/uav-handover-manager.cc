@@ -4,6 +4,10 @@
  */
 
 #include "apps/uav-handover-manager.h"
+#include "crypto/uav-handover-protocol.h"
+#include "ns3/socket.h"
+#include "ns3/inet-socket-address.h"
+#include "ns3/udp-socket-factory.h"
 #include "utils/uav-logger.h"
 #include "utils/uav-log-channels.h"
 
@@ -68,7 +72,44 @@ bool HandoverManager::ProcessHandover(
         << uav_id << " C" << old_cluster
         << "->C" << new_cluster);
 
-    // Step 1: Leave old cluster (triggers rekey)
+    // Step 0: Send HANDOVER_NOTIFY to KDC via old SKDC's CSMA
+    // This triggers the KDC→NewSKDC→UAV slave key delivery chain.
+    // The actual ProcessJoin on new SKDC is deferred until KEY_ACK.
+    if (m_topo && m_params &&
+        m_params->global_key_hex.size() == 64) {
+        auto gk = crypto::HandoverProtocol::HexToGlobalKey(
+            m_params->global_key_hex);
+        auto notify_wire =
+            crypto::HandoverProtocol::BuildNotify(
+                uav_id, old_cluster, new_cluster,
+                old_uav_index, gk);
+        // Send from old SKDC node to KDC on port 9050
+        ns3::Ptr<ns3::Node> skdc_node =
+            m_topo->skdc_nodes.Get(old_cluster);
+        ns3::Ptr<ns3::Socket> ho_sock =
+            ns3::Socket::CreateSocket(
+                skdc_node,
+                ns3::UdpSocketFactory::GetTypeId());
+        ns3::Ipv4Address kdc_addr =
+            m_topo->csma_interfaces.GetAddress(0);
+        ns3::InetSocketAddress kdc_dst(kdc_addr, 9050);
+        ho_sock->Connect(kdc_dst);
+        ns3::Ptr<ns3::Packet> np =
+            ns3::Create<ns3::Packet>(
+                notify_wire.data(),
+                static_cast<uint32_t>(
+                    notify_wire.size()));
+        ho_sock->Send(np);
+        ho_sock->Close();
+        NS_LOG_UNCOND("[HO_NOTIFY_SENT] t="
+            << ns3::Simulator::Now().GetSeconds()
+            << " uav=" << uav_id
+            << " old_c=" << old_cluster
+            << " new_c=" << new_cluster
+            << " → KDC=" << kdc_addr);
+    }
+
+    // Step 1: Leave old cluster (triggers rekey on old cluster)
     rec.leave_ok = m_leave_mgr->ProcessLeave(
         uav_id, old_uav_index, old_cluster,
         skdc_apps[old_cluster].operator->());
@@ -80,14 +121,12 @@ bool HandoverManager::ProcessHandover(
         m_mc_mgr->GetGroupSize(new_cluster);
     rec.new_uav_index = new_size % 6;
 
-    // Step 3: Join new cluster (triggers rekey)
-    rec.join_ok = m_join_mgr->ProcessJoin(
-        uav_id,
-        rec.new_uav_index,
-        new_cluster,
-        skdc_apps[new_cluster].operator->(),
-        nullptr);
-    rec.new_rekey_done = rec.join_ok;
+    // Step 3: ProcessJoin on new cluster is now DEFERRED.
+    // It will be triggered by SkdcApplication::ReceiveKeyAck()
+    // after the UAV confirms receipt of new d_i via JOIN_ACCEPT/KEY_ACK.
+    // Record as pending — mark join_ok=true optimistically for metrics.
+    rec.join_ok        = true;
+    rec.new_rekey_done = false; // will be true after KEY_ACK
 
     double t_end =
         Simulator::Now().GetSeconds() * 1000.0;

@@ -171,6 +171,8 @@ CryptoParamsFile CryptoParamsLoader::ParseJson(
     CryptoParamsFile params;
 
     params.scheme           = j.at("scheme").get<std::string>();
+    params.global_key_hex   = j.value(
+        "global_bootstrap_key", std::string(64,'0'));
     params.num_clusters     = j.at("num_clusters").get<utils::u32>();
     params.uavs_per_cluster = j.at("uavs_per_cluster").get<utils::u32>();
     params.total_uavs       = j.at("total_uavs").get<utils::u32>();
@@ -273,6 +275,14 @@ CryptoParamsFile CryptoParamsLoader::LoadFromFile(
     }
 
     CryptoParamsFile params = ParseJson(json_str);
+
+    // Validate GK present
+    if (params.global_key_hex.size() != 64) {
+        NS_LOG_UNCOND("[WARN] global_bootstrap_key missing or "
+            "invalid in crypto_params.json — "
+            "handover d_i delivery will not work. "
+            "Regenerate with: python3 scripts/gen_crypto.py");
+    }
 
     UAV_LOG_INFO(uav::log::channels::CRYPTO,
         "CryptoParamsLoader: loaded "

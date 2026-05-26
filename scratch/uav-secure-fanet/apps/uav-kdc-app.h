@@ -40,6 +40,8 @@
 #include <vector>
 #include <unordered_map>
 #include <string>
+#include <fstream>
+#include "crypto/uav-handover-protocol.h"
 
 namespace uav {
 namespace apps {
@@ -133,6 +135,17 @@ private:
     void InitializeClusters();
     void SchedulePeriodicSync();
     void PeriodicSync();
+    void ReceiveTelemetryFromSkdc(
+        ns3::Ptr<ns3::Socket> socket);
+
+    // Handover protocol handlers
+    void ReceiveHandoverNotify(
+        ns3::Ptr<ns3::Socket> socket);
+    void ForwardSlaveKey(
+        uint32_t uav_id,
+        uint32_t new_cluster,
+        uint32_t old_index);
+
     void SendControlPacket(
         ns3::Ipv4Address dst,
         utils::u32 cluster,

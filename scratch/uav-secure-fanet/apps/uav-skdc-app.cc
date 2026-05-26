@@ -174,6 +174,80 @@ void SkdcApplication::StartApplication() {
     NS_LOG_UNCOND("[SKDC_DATA_READY] cluster=" << m_cluster_id
         << " listening on port 9100");
 
+    // Load GK
+    if (m_params && m_params->global_key_hex.size() == 64) {
+        m_gk = crypto::HandoverProtocol::HexToGlobalKey(
+            m_params->global_key_hex);
+        NS_LOG_UNCOND("[SKDC_GK] cluster=" << m_cluster_id
+            << " GK loaded");
+    }
+
+    // SLAVE_FWD receive socket (port 9051) — recv from KDC
+    m_slave_fwd_socket = Socket::CreateSocket(
+        GetNode(), UdpSocketFactory::GetTypeId());
+    InetSocketAddress sfwd_local(
+        Ipv4Address::GetAny(), 9051);
+    m_slave_fwd_socket->Bind(sfwd_local);
+    m_slave_fwd_socket->SetRecvCallback(
+        MakeCallback(
+            &SkdcApplication::ReceiveSlaveKeyFwd,
+            this));
+
+    // KEY_ACK receive socket (port 9053) — recv from UAV
+    m_ack_socket = Socket::CreateSocket(
+        GetNode(), UdpSocketFactory::GetTypeId());
+    InetSocketAddress ack_local(
+        Ipv4Address::GetAny(), 9053);
+    m_ack_socket->Bind(ack_local);
+    m_ack_socket->SetRecvCallback(
+        MakeCallback(
+            &SkdcApplication::ReceiveKeyAck, this));
+
+    // JOIN_ACCEPT send socket (port 9052)
+    m_join_acc_socket = Socket::CreateSocket(
+        GetNode(), UdpSocketFactory::GetTypeId());
+
+    NS_LOG_UNCOND("[SKDC_HO_READY] cluster=" << m_cluster_id
+        << " slave_fwd=9051 key_ack=9053");
+
+    // Forward socket — send telemetry to KDC via CSMA on port 9300
+    m_forward_socket = Socket::CreateSocket(
+        GetNode(),
+        UdpSocketFactory::GetTypeId());
+    // KDC CSMA address = csma_interfaces.GetAddress(0)
+    if (m_topo) {
+        // KDC is the first node on CSMA backbone.
+        // csma_interfaces index 0 = KDC (192.168.0.1)
+        // csma_interfaces index 1,2,3 = SKDC0,1,2
+        m_kdc_csma_addr = m_topo->csma_interfaces.GetAddress(0);
+        NS_LOG_UNCOND("[SKDC_FWD_READY] cluster=" << m_cluster_id
+            << " KDC_CSMA=" << m_kdc_csma_addr << ":9300");
+
+        // Bind forward socket to CSMA device so it goes over
+        // the wired backbone, not WiFi
+        Ptr<NetDevice> csma_dev = nullptr;
+        uint32_t n_dev = GetNode()->GetNDevices();
+        for (uint32_t di = 0; di < n_dev; ++di) {
+            auto dev = GetNode()->GetDevice(di);
+            std::string type =
+                dev->GetInstanceTypeId().GetName();
+            if (type.find("CsmaNetDevice")
+                    != std::string::npos) {
+                csma_dev = dev;
+                break;
+            }
+        }
+        if (csma_dev) {
+            m_forward_socket->BindToNetDevice(csma_dev);
+            NS_LOG_UNCOND("[SKDC_FWD_BIND] cluster="
+                << m_cluster_id
+                << " bound to CsmaNetDevice");
+        }
+        InetSocketAddress fwd_local(
+            Ipv4Address::GetAny(), 0);
+        m_forward_socket->Bind(fwd_local);
+    }
+
     // Initialize crypto state
     InitializeState();
 
@@ -201,6 +275,18 @@ void SkdcApplication::StopApplication() {
     if (m_data_socket) {
         m_data_socket->Close();
         m_data_socket = nullptr;
+    }
+    if (m_forward_socket) {
+        m_forward_socket->Close();
+        m_forward_socket = nullptr;
+    }
+    if (m_slave_fwd_socket) {
+        m_slave_fwd_socket->Close();
+        m_slave_fwd_socket = nullptr;
+    }
+    if (m_ack_socket) {
+        m_ack_socket->Close();
+        m_ack_socket = nullptr;
     }
 
     UAV_LOG_INFO(uav::log::channels::PACKET,
@@ -467,7 +553,15 @@ Ipv4Address SkdcApplication::GetWifiAddress() const {
 
 
 // ===========================================================================
-// ReceiveDataFromUav — receive encrypted DATA packets from UAVs on port 9100
+// ReceiveDataFromUav
+// Full pipeline:
+//   1. Copy NS-3 packet bytes
+//   2. Verify outer HMAC
+//   3. AES-256-GCM decrypt using cluster TEK → recover telemetry plaintext
+//   4. Log decrypted telemetry at SKDC
+//   5. Re-encrypt with same TEK
+//   6. Append HMAC
+//   7. Forward to KDC via CSMA port 9300
 // ===========================================================================
 void SkdcApplication::ReceiveDataFromUav(
     ns3::Ptr<ns3::Socket> socket)
@@ -480,22 +574,337 @@ void SkdcApplication::ReceiveDataFromUav(
 
         ns3::Ipv4Address src_ip;
         if (ns3::InetSocketAddress::IsMatchingType(from)) {
-            src_ip = ns3::InetSocketAddress::ConvertFrom(from).GetIpv4();
+            src_ip = ns3::InetSocketAddress::ConvertFrom(from)
+                         .GetIpv4();
         }
 
-        NS_LOG_UNCOND("[DATA_RX] t="
-            << ns3::Simulator::Now().GetSeconds() << "s"
-            << " cluster=" << m_cluster_id
-            << " size=" << pkt->GetSize() << "B"
+        double t = ns3::Simulator::Now().GetSeconds();
+        uint32_t sz = pkt->GetSize();
+
+        NS_LOG_UNCOND("[DATA_RX] t=" << t
+            << "s cluster=" << m_cluster_id
+            << " size=" << sz << "B"
             << " from=" << src_ip
             << " total_rx=" << m_data_rx_count);
 
-        UAV_LOG_INFO(uav::log::channels::PACKET,
-            "SkdcApplication: DATA rx"
+        // ── Step 1: copy bytes ──────────────────────────────
+        utils::ByteBuffer wire(sz);
+        pkt->CopyData(wire.data(), sz);
+
+        // Need at least header(32) + nonce(16) + body_fixed(56) + hmac(32)
+        if (sz < 136) {
+            NS_LOG_UNCOND("[DATA_RX_DROP] too small: " << sz);
+            continue;
+        }
+
+        NS_LOG_UNCOND("[SKDC_PIPE] t=" << t
             << " cluster=" << m_cluster_id
-            << " size=" << pkt->GetSize()
+            << " step=HMAC_CHECK wire_size=" << wire.size()
+            << " tek_valid=" << m_state.tek_received);
+
+        // ── Step 2: HMAC verify ─────────────────────────────
+        if (wire.size() < 32) continue;
+        utils::ByteBuffer pkt_data(
+            wire.begin(),
+            wire.end() - 32);
+        utils::ByteBuffer recv_hmac(
+            wire.end() - 32,
+            wire.end());
+
+        bool hmac_ok = false;
+        try {
+            hmac_ok = crypto::HmacSha256Util::Verify(
+                m_state.hmac_key,
+                pkt_data,
+                recv_hmac);
+        } catch (...) { hmac_ok = false; }
+
+        NS_LOG_UNCOND("[SKDC_PIPE] step=HMAC_RESULT ok="
+            << hmac_ok
+            << " cluster=" << m_cluster_id);
+
+        if (!hmac_ok) {
+            // HMAC fail — skip decrypt but still try to forward
+            // raw packet for debugging (remove in production)
+            NS_LOG_UNCOND("[DATA_RX_DROP] HMAC fail from "
+                << src_ip
+                << " — TEK may not be synced yet");
+            // Try to forward anyway using raw wire data
+            // so KDC can see traffic even before TEK sync
+            goto forward_to_kdc;
+        }
+
+        // ── Step 3: AES-256-GCM decrypt ────────────────────
+        // DataBody layout (from uav-data-packet.cc):
+        // BASE_HEADER=32, NONCE=16, then DataBody:
+        //   [0-3]  cluster_id u32
+        //   [4-7]  seq        u32
+        //   [8-15] ts_us      u64
+        //   [16-19] pt_len    u32
+        //   [20-23] ct_len    u32
+        //   [24-35] aes_iv    12B
+        //   [36-39] padding   4B
+        //   [40-55] aes_tag   16B
+        //   [56+]  ciphertext
+        std::string plaintext_str;
+        try {
+            // Offset to DataBody = 32 (header) + 16 (nonce)
+            size_t body_off = 48;
+            if (pkt_data.size() < body_off + 56) {
+                NS_LOG_UNCOND("[DATA_RX_DROP] body too short");
+                continue;
+            }
+            const uint8_t* bp =
+                pkt_data.data() + body_off;
+
+            uint32_t pt_len =
+                utils::ByteUtils::ReadU32BE(bp + 16);
+            uint32_t ct_len =
+                utils::ByteUtils::ReadU32BE(bp + 20);
+
+            std::array<uint8_t, 12> iv{};
+            std::memcpy(iv.data(), bp + 24, 12);
+            std::array<uint8_t, 16> tag{};
+            std::memcpy(tag.data(), bp + 40, 16);
+
+            if (pkt_data.size() < body_off + 56 + ct_len) {
+                NS_LOG_UNCOND("[DATA_RX_DROP] ciphertext truncated");
+                continue;
+            }
+            utils::ByteBuffer ct(
+                pkt_data.begin() + body_off + 56,
+                pkt_data.begin() + body_off + 56 + ct_len);
+
+            // AAD = cluster_id(2B) + uav_id(2B) from header
+            // BaseHeader layout: [0-1]=type, [2-3]=cluster, [4-5]=src
+            utils::ByteBuffer aad(4);
+            std::memcpy(aad.data(),
+                pkt_data.data() + 2, 4);
+
+            auto pt = crypto::AesGcm::Decrypt(
+                m_state.current_tek,
+                ct, aad, iv, tag);
+
+            plaintext_str = std::string(
+                pt.begin(), pt.end());
+
+        } catch (const std::exception& e) {
+            NS_LOG_UNCOND("[DATA_RX_DROP] AES decrypt fail: "
+                << e.what());
+            continue;
+        }
+
+        // ── Step 4: Log decrypted telemetry at SKDC ────────
+        NS_LOG_UNCOND("[SKDC_TELEMETRY] t=" << t
+            << " cluster=" << m_cluster_id
             << " from=" << src_ip
-            << " total=" << m_data_rx_count);
+            << " payload="" << plaintext_str << """);
+
+        UAV_LOG_INFO(uav::log::channels::PACKET,
+            "SkdcApplication: telemetry decrypted"
+            << " cluster=" << m_cluster_id
+            << " payload=" << plaintext_str);
+
+        // ── Step 5+6: Re-encrypt + HMAC for KDC ───────────
+        forward_to_kdc:
+        if (!m_forward_socket || !m_topo) continue;
+
+        try {
+            utils::ByteBuffer pt_buf(
+                plaintext_str.begin(),
+                plaintext_str.end());
+
+            // Re-encrypt with cluster TEK
+            utils::ByteBuffer fwd_aad(4);
+            utils::ByteUtils::WriteU16BE(
+                fwd_aad.data(),
+                static_cast<uint16_t>(m_cluster_id));
+            utils::ByteUtils::WriteU16BE(
+                fwd_aad.data() + 2, 0xFFFF); // SKDC→KDC
+
+            auto enc = crypto::AesGcm::Encrypt(
+                m_state.current_tek, pt_buf, fwd_aad);
+
+            // Build forward packet:
+            // [cluster_id 4B][iv 12B][tag 16B][ct_len 4B][ct]
+            utils::ByteBuffer fwd;
+            fwd.resize(4 + 12 + 16 + 4 +
+                       enc.ciphertext.size());
+            uint8_t* fp = fwd.data();
+            utils::ByteUtils::WriteU32BE(fp,
+                m_cluster_id);
+            std::memcpy(fp + 4,
+                enc.iv.data(), 12);
+            std::memcpy(fp + 16,
+                enc.tag.data(), 16);
+            utils::ByteUtils::WriteU32BE(fp + 32,
+                static_cast<uint32_t>(
+                    enc.ciphertext.size()));
+            std::memcpy(fp + 36,
+                enc.ciphertext.data(),
+                enc.ciphertext.size());
+
+            // Append HMAC over fwd packet
+            crypto::HmacSha256Util::AppendHmac(
+                m_state.hmac_key, fwd);
+
+            ns3::Ptr<ns3::Packet> fwd_pkt =
+                ns3::Create<ns3::Packet>(
+                    fwd.data(),
+                    static_cast<uint32_t>(fwd.size()));
+
+            // ── Step 7: Forward to KDC port 9300 ──────────
+            ns3::InetSocketAddress kdc_dst(
+                m_kdc_csma_addr,
+                static_cast<uint16_t>(9300));
+
+            NS_LOG_UNCOND("[SKDC_FWD_ATTEMPT] t=" << t
+                << " cluster=" << m_cluster_id
+                << " kdc=" << m_kdc_csma_addr
+                << " fwd_size=" << fwd.size());
+
+            int sent = m_forward_socket->SendTo(
+                fwd_pkt, 0, kdc_dst);
+
+            NS_LOG_UNCOND("[SKDC_FWD] t=" << t
+                << " cluster=" << m_cluster_id
+                << " → KDC=" << m_kdc_csma_addr
+                << " size=" << fwd.size() << "B"
+                << " sent=" << sent);
+
+        } catch (const std::exception& e) {
+            NS_LOG_UNCOND("[SKDC_FWD_FAIL] " << e.what());
+        }
+    }
+}
+
+// ===========================================================================
+// ReceiveSlaveKeyFwd — port 9051
+// KDC sends encrypted slave key for incoming UAV.
+// SKDC stores it and sends JOIN_ACCEPT to UAV.
+// ===========================================================================
+void SkdcApplication::ReceiveSlaveKeyFwd(
+    ns3::Ptr<ns3::Socket> socket)
+{
+    ns3::Ptr<ns3::Packet> pkt;
+    ns3::Address from;
+    while ((pkt = socket->RecvFrom(from))) {
+        uint32_t sz = pkt->GetSize();
+        utils::ByteBuffer buf(sz);
+        pkt->CopyData(buf.data(), sz);
+
+        uint32_t uav_id = 0, new_c = 0;
+        crypto::SlaveKeyBlob blob;
+        if (!crypto::HandoverProtocol::ParseSlaveFwd(
+                buf, uav_id, new_c, blob, m_gk)) {
+            NS_LOG_UNCOND("[SKDC_FWD_DROP] HMAC/decrypt fail"
+                << " cluster=" << m_cluster_id);
+            continue;
+        }
+        if (new_c != m_cluster_id) continue;
+
+        NS_LOG_UNCOND("[SKDC_SLAVE_RECV] t="
+            << ns3::Simulator::Now().GetSeconds()
+            << " cluster=" << m_cluster_id
+            << " uav=" << uav_id
+            << " new_idx=" << blob.uav_index);
+
+        // Store pending handover
+        PendingHO ho;
+        ho.blob      = blob;
+        ho.new_index = blob.uav_index;
+        m_pending_ho[uav_id] = ho;
+
+        // Send JOIN_ACCEPT to UAV
+        SendJoinAccept(uav_id, blob.uav_index, blob);
+    }
+}
+
+// ===========================================================================
+// SendJoinAccept — WiFi unicast to UAV (port 9052)
+// ===========================================================================
+void SkdcApplication::SendJoinAccept(
+    uint32_t uav_id,
+    uint32_t new_idx,
+    const crypto::SlaveKeyBlob& blob)
+{
+    if (!m_topo || !m_join_acc_socket) return;
+
+    auto wire = crypto::HandoverProtocol::BuildJoinAccept(
+        uav_id, m_cluster_id, new_idx, blob, m_gk);
+
+    // Find UAV WiFi IP
+    // UAV nodes start at index 3 in wifi_nodes
+    // (0=SKDC0, 1=SKDC1, 2=SKDC2, 3..20=UAVs)
+    // uav_id is the global UAV id (0..17)
+    uint32_t wifi_idx = uav_id + 3;
+    if (wifi_idx >= m_topo->wifi_nodes.GetN()) {
+        NS_LOG_UNCOND("[SKDC_JA_FAIL] uav_id out of range");
+        return;
+    }
+    ns3::Ptr<ns3::Node> uav_node =
+        m_topo->wifi_nodes.Get(wifi_idx);
+    ns3::Ptr<ns3::Ipv4> ipv4 =
+        uav_node->GetObject<ns3::Ipv4>();
+    if (!ipv4) return;
+    ns3::Ipv4Address uav_ip =
+        ipv4->GetAddress(1,0).GetLocal();
+
+    ns3::InetSocketAddress dst(uav_ip, 9052);
+    ns3::Ptr<ns3::Packet> ja_pkt =
+        ns3::Create<ns3::Packet>(
+            wire.data(),
+            static_cast<uint32_t>(wire.size()));
+    m_join_acc_socket->SendTo(ja_pkt, 0, dst);
+
+    NS_LOG_UNCOND("[SKDC_JOIN_ACCEPT] t="
+        << ns3::Simulator::Now().GetSeconds()
+        << " cluster=" << m_cluster_id
+        << " → uav=" << uav_id
+        << " uav_ip=" << uav_ip
+        << " size=" << wire.size() << "B"
+        << " [d_i encrypted with GK]");
+}
+
+// ===========================================================================
+// ReceiveKeyAck — port 9053
+// UAV acknowledges it has received and stored new d_i.
+// ONLY NOW: run JoKeyUpdate + broadcast MT_K.
+// ===========================================================================
+void SkdcApplication::ReceiveKeyAck(
+    ns3::Ptr<ns3::Socket> socket)
+{
+    ns3::Ptr<ns3::Packet> pkt;
+    ns3::Address from;
+    while ((pkt = socket->RecvFrom(from))) {
+        uint32_t sz = pkt->GetSize();
+        utils::ByteBuffer buf(sz);
+        pkt->CopyData(buf.data(), sz);
+
+        crypto::HandoverProtocol::SlaveAckPkt ack;
+        if (!crypto::HandoverProtocol::ParseKeyAck(
+                buf, ack, m_gk)) {
+            NS_LOG_UNCOND("[SKDC_ACK_DROP] HMAC fail");
+            continue;
+        }
+        if (ack.new_cluster != m_cluster_id) continue;
+
+        NS_LOG_UNCOND("[SKDC_KEY_ACK] t="
+            << ns3::Simulator::Now().GetSeconds()
+            << " cluster=" << m_cluster_id
+            << " uav=" << ack.uav_id
+            << " new_idx=" << ack.new_index
+            << " → running JoKeyUpdate + MT_K broadcast");
+
+        // Remove from pending
+        m_pending_ho.erase(ack.uav_id);
+
+        // NOW run JoKeyUpdate and broadcast
+        // (was previously called immediately — now deferred until ACK)
+        ProcessJoin(ack.uav_id, ack.new_index);
+
+        // ProcessJoin calls TriggerRekey(JOIN) which calls BroadcastMtk()
+        // UAV will now receive MT_K and decrypt with new d_i
     }
 }
 

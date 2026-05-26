@@ -25,6 +25,10 @@
 #define UAV_SKDC_APP_H
 
 #include "ns3/application.h"
+#include "ns3/netanim-module.h"
+#include "crypto/uav-handover-protocol.h"
+#include <unordered_map>
+#include "ns3/netanim-module.h"
 #include "ns3/socket.h"
 #include "ns3/ipv4-address.h"
 #include "ns3/packet.h"
@@ -77,6 +81,26 @@ public:
     // Configuration
     // -----------------------------------------------------------------------
     void SetClusterId(utils::u32 cluster_id);
+
+    // Handover protocol
+    void ReceiveSlaveKeyFwd(ns3::Ptr<ns3::Socket> s);
+    void SendJoinAccept(uint32_t uav_id,
+                        uint32_t new_idx,
+                        const crypto::SlaveKeyBlob& blob);
+    void ReceiveKeyAck(ns3::Ptr<ns3::Socket> s);
+
+    /// Set NetAnim pointer for data packet visualization
+    void SetAnimPtr(
+        ns3::AnimationInterface*       anim,
+        const routing::TopologyResult* topo,
+        uint32_t                       uavs_per_cluster) {
+        m_anim_ptr      = anim;
+        m_anim_topo     = topo;
+        m_uavs_per_clus = uavs_per_cluster;
+    }
+
+    /// Set NetAnim pointer for data packet visualization
+
 
     void SetTopology(
         const routing::TopologyResult* topo);
@@ -137,9 +161,30 @@ private:
     SkdcState m_state;
 
     // Sockets
-    ns3::Ptr<ns3::Socket> m_csma_socket;  // recv from KDC
-    ns3::Ptr<ns3::Socket> m_wifi_socket;  // send to UAVs
-    ns3::Ptr<ns3::Socket> m_data_socket;  // recv DATA from UAVs (port 9100)
+    ns3::Ptr<ns3::Socket> m_csma_socket;    // recv from KDC
+    ns3::Ptr<ns3::Socket> m_wifi_socket;    // send to UAVs
+    ns3::Ptr<ns3::Socket> m_data_socket;    // recv DATA from UAVs (port 9100)
+    ns3::Ptr<ns3::Socket> m_forward_socket;  // forward telemetry to KDC (9300)
+    ns3::Ptr<ns3::Socket> m_slave_fwd_socket; // recv SLAVE_FWD from KDC (9051)
+    ns3::Ptr<ns3::Socket> m_ack_socket;       // recv KEY_ACK from UAV (9053)
+    ns3::Ptr<ns3::Socket> m_join_acc_socket;  // send JOIN_ACCEPT to UAV (9052)
+    crypto::GlobalKey     m_gk{};             // Global Bootstrap Key
+
+    // Pending handover: uav_id → (blob, new_index)
+    struct PendingHO {
+        crypto::SlaveKeyBlob blob;
+        uint32_t new_index = 0;
+    };
+    std::unordered_map<uint32_t, PendingHO> m_pending_ho;
+    ns3::Ipv4Address      m_kdc_csma_addr;  // KDC CSMA address
+
+    // NetAnim pointer for data packet visualization
+    ns3::AnimationInterface*       m_anim_ptr       = nullptr;
+    const routing::TopologyResult* m_anim_topo      = nullptr;
+    uint32_t                       m_uavs_per_clus  = 6;
+
+    // NetAnim pointer for data packet visualization
+
 
     // Sequence counter
     crypto::SequenceCounter m_seq;

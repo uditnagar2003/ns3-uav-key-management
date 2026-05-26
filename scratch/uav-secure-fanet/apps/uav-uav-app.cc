@@ -25,8 +25,11 @@
 #include "ns3/simulator.h"
 #include "ns3/log.h"
 #include "ns3/packet.h"
+#include "ns3/mobility-module.h"
 
 #include <boost/multiprecision/cpp_int.hpp>
+#include <sstream>
+#include <iomanip>
 #include <cstring>
 #include <sstream>
 
@@ -115,11 +118,38 @@ void UavApplication::StartApplication() {
         GetNode(),
         UdpSocketFactory::GetTypeId());
 
+    // Load GK from crypto params
+    if (m_params && m_params->global_key_hex.size() == 64) {
+        m_gk = crypto::HandoverProtocol::HexToGlobalKey(
+            m_params->global_key_hex);
+    }
+
+    // JOIN_ACCEPT receive socket — new SKDC sends d_i on handover
+    m_join_acc_socket = Socket::CreateSocket(
+        GetNode(), UdpSocketFactory::GetTypeId());
+    InetSocketAddress ja_local(
+        Ipv4Address::GetAny(), 9052);
+    m_join_acc_socket->Bind(ja_local);
+    m_join_acc_socket->SetRecvCallback(
+        MakeCallback(
+            &UavApplication::ReceiveJoinAccept, this));
+
+    // KEY_ACK send socket
+    m_ack_send_socket = Socket::CreateSocket(
+        GetNode(), UdpSocketFactory::GetTypeId());
+
     // Initialize slave key and TEK from crypto params
     InitializeSlaveKey();
 
-    // Schedule telemetry sending  (UNCHANGED)
-    ScheduleTelemetry();
+    // Delay first telemetry to t=15s to allow OLSR convergence
+    // OLSR needs ~2x TC_INTERVAL (5s) = 10s to build full routes
+    // Using 15s gives a comfortable margin
+    double start_delay = 15.0 -
+        Simulator::Now().GetSeconds();
+    if (start_delay < 3.0) start_delay = 3.0;
+    Simulator::Schedule(
+        Seconds(start_delay),
+        &UavApplication::SendTelemetry, this);
 
     UAV_LOG_INFO(uav::log::channels::PACKET,
         "UavApplication: started"
@@ -135,6 +165,10 @@ void UavApplication::StopApplication() {
     if (m_recv_socket) {
         m_recv_socket->Close();
         m_recv_socket = nullptr;
+    }
+    if (m_join_acc_socket) {
+        m_join_acc_socket->Close();
+        m_join_acc_socket = nullptr;
     }
     if (m_send_socket) {
         m_send_socket->Close();
@@ -312,13 +346,49 @@ void UavApplication::SendTelemetry() {
         return;
     }
 
-    std::string msg = "UAV" +
-        std::to_string(m_uav_id) +
-        "@t=" +
-        std::to_string(static_cast<int>(
-            Simulator::Now().GetSeconds()));
-    utils::ByteBuffer payload(msg.begin(),
-                               msg.end());
+    // Build realistic FANET telemetry payload
+    // Fields: UAV_ID, cluster, sim_time, x, y, z,
+    //         vx, vy, vz, battery_pct, seq, tek_version
+    std::ostringstream oss;
+    double t = Simulator::Now().GetSeconds();
+
+    // Get position and velocity from mobility model
+    double px = 0, py = 0, pz = 0;
+    double vx = 0, vy = 0, vz = 0;
+    Ptr<MobilityModel> mob =
+        GetNode()->GetObject<MobilityModel>();
+    if (mob) {
+        auto pos = mob->GetPosition();
+        auto vel = mob->GetVelocity();
+        px = pos.x; py = pos.y; pz = pos.z;
+        vx = vel.x; vy = vel.y; vz = vel.z;
+    }
+
+    // Battery: starts at 100%, drains 0.05%/s
+    double bat = 100.0 - t * 0.05;
+    if (bat < 0) bat = 0;
+
+    oss << std::fixed << std::setprecision(2)
+        << "ID:"  << m_uav_id
+        << ",C:"  << m_cluster_id
+        << ",T:"  << static_cast<int>(t)
+        << ",X:"  << px
+        << ",Y:"  << py
+        << ",Z:"  << pz
+        << ",VX:" << vx
+        << ",VY:" << vy
+        << ",VZ:" << vz
+        << ",BAT:"<< bat
+        << ",SEQ:"<< m_state.data_seq
+        << ",TEK:"<< m_state.rekey_version;
+
+    std::string msg = oss.str();
+    utils::ByteBuffer payload(msg.begin(), msg.end());
+
+    NS_LOG_UNCOND("[TELEMETRY_BUILD] t=" << t
+        << " uav=" << m_uav_id
+        << " payload="" << msg << """
+        << " bytes=" << payload.size());
 
     SendData(payload);
     ScheduleTelemetry();
@@ -476,6 +546,143 @@ Ipv4Address UavApplication::GetSkdcWifiAddr() const {
     }
     // Fallback broadcast (should not happen)
     return Ipv4Address("255.255.255.255");
+}
+
+// ===========================================================================
+// ReceiveJoinAccept — port 9052
+// New SKDC sends d_i_new encrypted with GK.
+// UAV decrypts, stores new slave key, sends KEY_ACK.
+// ===========================================================================
+void UavApplication::ReceiveJoinAccept(
+    ns3::Ptr<ns3::Socket> socket)
+{
+    ns3::Ptr<ns3::Packet> pkt;
+    ns3::Address from;
+    while ((pkt = socket->RecvFrom(from))) {
+        uint32_t sz = pkt->GetSize();
+        utils::ByteBuffer buf(sz);
+        pkt->CopyData(buf.data(), sz);
+
+        uint32_t uav_id_pkt = 0;
+        uint32_t new_cluster = 0, new_index = 0;
+        crypto::SlaveKeyBlob blob;
+
+        if (!crypto::HandoverProtocol::ParseJoinAccept(
+                buf, uav_id_pkt, new_cluster,
+                new_index, blob, m_gk)) {
+            NS_LOG_UNCOND("[UAV_JA_DROP] t="
+                << ns3::Simulator::Now().GetSeconds()
+                << " uav=" << m_uav_id
+                << " HMAC/decrypt fail");
+            continue;
+        }
+
+        if (uav_id_pkt != m_uav_id) continue;
+
+        NS_LOG_UNCOND("[UAV_JOIN_ACCEPT] t="
+            << ns3::Simulator::Now().GetSeconds()
+            << " uav=" << m_uav_id
+            << " old_cluster=" << m_cluster_id
+            << " new_cluster=" << new_cluster
+            << " new_index=" << new_index
+            << " [d_i decrypted with GK ✓]");
+
+        // Update slave key with new cluster params
+        UpdateSlaveKey(blob, new_cluster, new_index);
+
+        // Send KEY_ACK to new SKDC
+        SendKeyAck(new_cluster, new_index);
+    }
+}
+
+// ===========================================================================
+// UpdateSlaveKey — install new d_i, n_i, e_i from blob
+// ===========================================================================
+void UavApplication::UpdateSlaveKey(
+    const crypto::SlaveKeyBlob& blob,
+    uint32_t new_cluster,
+    uint32_t new_index)
+{
+    uint32_t old_cluster = m_cluster_id;
+
+    // Convert byte buffers back to BigInt
+    auto from_bytes = [](const utils::ByteBuffer& b)
+        -> crypto::BigInt {
+        std::string hex;
+        hex.reserve(b.size() * 2);
+        for (uint8_t byte : b) {
+            char tmp[3];
+            snprintf(tmp, sizeof(tmp), "%02x", byte);
+            hex += tmp;
+        }
+        // Remove leading zeros
+        size_t start = hex.find_first_not_of('0');
+        if (start == std::string::npos) return crypto::BigInt(0);
+        return crypto::BigIntOps::FromHexString(
+            hex.substr(start));
+    };
+
+    // Install new slave key params
+    m_state.d_i = from_bytes(blob.d_i_bytes);
+    m_state.n_i = from_bytes(blob.n_i_bytes);
+    m_state.e_i = from_bytes(blob.e_i_bytes);
+
+    // Update cluster identity
+    m_state.cluster_id  = new_cluster;
+    m_state.uav_index   = new_index;
+    m_cluster_id        = new_cluster;
+    m_uav_index         = new_index;
+
+    // Invalidate old TEK — will be refreshed when new MT_K arrives
+    m_state.tek_valid = false;
+
+    NS_LOG_UNCOND("[UAV_DI_UPDATE] t="
+        << ns3::Simulator::Now().GetSeconds()
+        << " uav=" << m_uav_id
+        << " C" << old_cluster
+        << "→C" << new_cluster
+        << " new_idx=" << new_index
+        << " d_i_updated=YES"
+        << " tek_valid=PENDING_MT_K");
+}
+
+// ===========================================================================
+// SendKeyAck — UAV confirms d_i received, triggers MT_K broadcast
+// ===========================================================================
+void UavApplication::SendKeyAck(
+    uint32_t new_cluster,
+    uint32_t new_index)
+{
+    if (!m_topo || !m_ack_send_socket) return;
+
+    auto wire = crypto::HandoverProtocol::BuildKeyAck(
+        m_uav_id, new_cluster, new_index, m_gk);
+
+    // Send to new SKDC WiFi IP on port 9053
+    // SKDC index in wifi_nodes = new_cluster (0,1,2)
+    if (new_cluster >= m_topo->skdc_nodes.GetN()) return;
+    ns3::Ptr<ns3::Node> skdc_node =
+        m_topo->skdc_nodes.Get(new_cluster);
+    ns3::Ptr<ns3::Ipv4> ipv4 =
+        skdc_node->GetObject<ns3::Ipv4>();
+    if (!ipv4) return;
+    // Get WiFi interface address (interface 1)
+    ns3::Ipv4Address skdc_wifi =
+        ipv4->GetAddress(1,0).GetLocal();
+
+    ns3::InetSocketAddress dst(skdc_wifi, 9053);
+    ns3::Ptr<ns3::Packet> ack_pkt =
+        ns3::Create<ns3::Packet>(
+            wire.data(),
+            static_cast<uint32_t>(wire.size()));
+    m_ack_send_socket->SendTo(ack_pkt, 0, dst);
+
+    NS_LOG_UNCOND("[UAV_KEY_ACK] t="
+        << ns3::Simulator::Now().GetSeconds()
+        << " uav=" << m_uav_id
+        << " → new_skdc=" << skdc_wifi
+        << " new_cluster=" << new_cluster
+        << " [ACK sent, awaiting MT_K broadcast]");
 }
 
 } // namespace apps
