@@ -5,9 +5,9 @@ header_overhead_ratio,0.0512821
 hmac_overhead_ratio,0.025641
 ctrl_bytes_per_sec,27.3067
 rekey_bytes_per_rekey,512
-avg_aes_enc_us,19647.7
+avg_aes_enc_us,15464.1
 avg_aes_dec_us,0
 avg_hmac_us,0
-avg_crt_verify_us,26198.2
+avg_crt_verify_us,20620.1
 avg_rekey_compute_us,0
 storage_per_uav_bytes,1568

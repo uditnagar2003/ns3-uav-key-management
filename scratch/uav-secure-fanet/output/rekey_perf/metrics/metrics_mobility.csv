@@ -3,6 +3,6 @@ cluster_head_stability,1
 avg_route_break_freq,0.000185185
 total_route_breaks,1
 mobility_rekey_corr,0
-swarm_survivability,0.833333
-avg_connectivity_ratio,0.686275
+swarm_survivability,1
+avg_connectivity_ratio,1
 handover_trigger_rate,0

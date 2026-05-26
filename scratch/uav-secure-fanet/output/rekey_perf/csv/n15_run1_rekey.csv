@@ -1,0 +1,9 @@
+time_s,cluster_id,trigger,latency_ms,tek_version
+60,0,PERIODIC,0,8
+60,1,PERIODIC,0,2
+60,2,PERIODIC,0,2
+60,0,KDC_INIT,0,11
+60,1,KDC_INIT,0,3
+60,2,KDC_INIT,0,3
+80,0,HANDOVER,0,12
+80,1,HANDOVER,0,4

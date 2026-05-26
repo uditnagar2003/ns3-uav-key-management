@@ -91,6 +91,18 @@ static constexpr double CLUSTER_CENTERS[3][2] = {
     {1250.0,  750.0},
 };
 
+// Cluster radius — UAV is member of nearest SKDC within this radius
+// If UAV moves outside ALL radii, it stays with nearest SKDC
+static constexpr double CLUSTER_RADIUS_M = 400.0;
+
+// Cluster colors for UAV nodes
+struct RgbColor { uint8_t r, g, b; };
+static constexpr RgbColor CLUSTER_UAV_COLORS[3] = {
+    {  0, 200,  80},   // C0 = green
+    {255, 140,   0},   // C1 = orange
+    {  0, 200, 200},   // C2 = cyan
+};
+
 static const char* CRYPTO_JSON =
     "/home/udit/ns-allinone-3.43/ns-3.43"
     "/scratch/uav-secure-fanet/json/crypto_params.json";
@@ -325,6 +337,12 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
         anim = new AnimationInterface(af);
         anim->EnablePacketMetadata(true);
         anim->SetMobilityPollInterval(MilliSeconds(100));
+
+        // ── OLSR Packet Suppression ──
+        // OLSR HELLO ~50B, TC ~80B, MID ~60B
+        // Our packets: AUTH=256B, REKEY=512B, DATA=144B+, MTK=200B+
+        // Set background color to help distinguish clusters visually
+        anim->SetBackgroundImage("", 0, 0, 1.0, 1.0, 0.0);
 
         // === OLSR SUPPRESSION ===
         // Filter out small OLSR control packets from visualization.

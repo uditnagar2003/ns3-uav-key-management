@@ -72,42 +72,13 @@ bool HandoverManager::ProcessHandover(
         << uav_id << " C" << old_cluster
         << "->C" << new_cluster);
 
-    // Step 0: Send HANDOVER_NOTIFY to KDC via old SKDC's CSMA
-    // This triggers the KDC→NewSKDC→UAV slave key delivery chain.
-    // The actual ProcessJoin on new SKDC is deferred until KEY_ACK.
-    if (m_topo && m_params &&
-        m_params->global_key_hex.size() == 64) {
-        auto gk = crypto::HandoverProtocol::HexToGlobalKey(
-            m_params->global_key_hex);
-        auto notify_wire =
-            crypto::HandoverProtocol::BuildNotify(
-                uav_id, old_cluster, new_cluster,
-                old_uav_index, gk);
-        // Send from old SKDC node to KDC on port 9050
-        ns3::Ptr<ns3::Node> skdc_node =
-            m_topo->skdc_nodes.Get(old_cluster);
-        ns3::Ptr<ns3::Socket> ho_sock =
-            ns3::Socket::CreateSocket(
-                skdc_node,
-                ns3::UdpSocketFactory::GetTypeId());
-        ns3::Ipv4Address kdc_addr =
-            m_topo->csma_interfaces.GetAddress(0);
-        ns3::InetSocketAddress kdc_dst(kdc_addr, 9050);
-        ho_sock->Connect(kdc_dst);
-        ns3::Ptr<ns3::Packet> np =
-            ns3::Create<ns3::Packet>(
-                notify_wire.data(),
-                static_cast<uint32_t>(
-                    notify_wire.size()));
-        ho_sock->Send(np);
-        ho_sock->Close();
-        NS_LOG_UNCOND("[HO_NOTIFY_SENT] t="
-            << ns3::Simulator::Now().GetSeconds()
-            << " uav=" << uav_id
-            << " old_c=" << old_cluster
-            << " new_c=" << new_cluster
-            << " → KDC=" << kdc_addr);
-    }
+    // Step 0: Log handover — NOTIFY is sent via SkdcApplication
+    // (persistent socket, not per-call creation which causes crash)
+    NS_LOG_UNCOND("[HO_MANAGER] t="
+        << ns3::Simulator::Now().GetSeconds()
+        << " uav=" << uav_id
+        << " C" << old_cluster
+        << "→C" << new_cluster);
 
     // Step 1: Leave old cluster (triggers rekey on old cluster)
     rec.leave_ok = m_leave_mgr->ProcessLeave(

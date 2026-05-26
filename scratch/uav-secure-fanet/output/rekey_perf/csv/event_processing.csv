@@ -12,13 +12,13 @@ trigger_s,complete_s,event_type,uav_id,cluster_id,latency_ms,details
 80,80,REKEY,0,0,0,HANDOVER
 80,80,REKEY,1,1,0,HANDOVER
 85,85,JOIN,4,0,0,ok
-105,105,JOIN,5,1,0,ok
+105,105,JOIN,5,0,0,ok
 125,125,JOIN,6,1,0,ok
 145,145,JOIN,7,1,0,ok
 165,165,JOIN,8,1,0,ok
 185,185,JOIN,9,1,0,ok
-205,205,JOIN,10,2,0,ok
-225,225,JOIN,11,2,0,ok
+205,205,JOIN,10,1,0,ok
+225,225,JOIN,11,1,0,ok
 245,245,JOIN,12,2,0,ok
 265,265,JOIN,13,2,0,ok
 285,285,JOIN,14,2,0,ok
