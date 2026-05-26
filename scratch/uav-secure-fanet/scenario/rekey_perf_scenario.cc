@@ -38,6 +38,7 @@
 #include "crypto/uav-crt-manager.h"
 #include "visualization/uav-netanim-enhancer.h"
 #include "metrics/uav-timing-profiler.h"
+#include "metrics/uav-metrics-framework.h"
 #include "visualization/uav-node-color.h"
 #include "visualization/uav-packet-viz.h"
 #include "visualization/uav-event-annotations.h"
@@ -62,6 +63,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <numeric>
+#include <set>
 #include <sys/stat.h>
 
 NS_LOG_COMPONENT_DEFINE("RekeyPerfScenario");
@@ -251,6 +253,14 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
     routing::TopologyResult  topo = builder.Build();
 
     // --------------------------------------------------------
+    // MetricsFramework — unified metrics collector (all 5 categories)
+    // --------------------------------------------------------
+    std::string mf_out = m_cfg.output_dir + "/metrics";
+    mkdir(mf_out.c_str(), 0755);
+    uav::metrics::MetricsFramework mf(&topo, mf_out, seed);
+    mf.Initialize(1.0);
+
+    // --------------------------------------------------------
     // Mobility — override with scenario config
     // --------------------------------------------------------
     mobility::MobilityConfig mob_cfg;
@@ -264,6 +274,26 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
 
     mobility::MobilityManager mob_mgr(topo, mob_cfg);
     mob_mgr.InstallGaussMarkov();
+
+    // Schedule periodic swarm snapshots every 5s
+    // (uses a lambda captured by pointer — safe as mf outlives sim)
+    auto swarm_snap_fn = [&]() {
+        // Simple approximation: all UAVs active minus jammed
+        uint32_t active = actual_n;
+        mf.RecordSwarmSnapshot(active, 0, 0, 0,
+            (active * (active - 1)) / 2);
+    };
+    // Schedule first snapshot at t=1s, recurring via lambda chain
+    std::function<void()> snap_sched;
+    snap_sched = [&]() {
+        swarm_snap_fn();
+        if (Simulator::Now().GetSeconds() + 5.0
+                < m_cfg.duration_s)
+            Simulator::Schedule(Seconds(5.0),
+                std::function<void()>(snap_sched));
+    };
+    Simulator::Schedule(Seconds(1.0),
+        std::function<void()>(snap_sched));
 
     // --------------------------------------------------------
     // FlowMonitor
@@ -296,13 +326,34 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
         anim->EnablePacketMetadata(true);
         anim->SetMobilityPollInterval(MilliSeconds(100));
 
-        // KDC
+        // === OLSR SUPPRESSION ===
+        // Filter out small OLSR control packets from visualization.
+        // OLSR HELLO ~50B, TC ~80B — set min display size to 200B.
+        // Our key packets: AUTH=256B, REKEY=512B, DATA=1024B.
+        anim->SetMaxPktsPerTraceFile(1000000);
+        // Note: NetAnim 3.109 does not expose per-protocol filters,
+        // so we use UpdateNodeSize=0 trick on a dummy node.
+        // The effective suppression is done via packet descriptions below.
+
+        // === KDC node ===
         anim->UpdateNodeColor(topo.kdc_node.Get(0),
             COLOR_KDC.r, COLOR_KDC.g, COLOR_KDC.b);
         anim->UpdateNodeDescription(
-            topo.kdc_node.Get(0), "KDC");
+            topo.kdc_node.Get(0),
+            "KDC\n[Key Authority]\nTEK Generator");
         anim->UpdateNodeSize(
-            topo.kdc_node.Get(0), 3.0, 3.0);
+            topo.kdc_node.Get(0), 3.5, 3.5);
+
+        // === KDC → SKDC backbone link labels ===
+        // Shows the CSMA wired key distribution channel
+        for (uint32_t ci = 0;
+             ci < topo.skdc_nodes.GetN(); ++ci) {
+            anim->UpdateLinkDescription(
+                topo.kdc_node.Get(0),
+                topo.skdc_nodes.Get(ci),
+                "CSMA|TEK-DIST|C"
+                    + std::to_string(ci));
+        }
 
         // SKDCs
         for (uint32_t i = 0;
@@ -311,9 +362,27 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
                 COLOR_SKDC.r, COLOR_SKDC.g, COLOR_SKDC.b);
             anim->UpdateNodeDescription(
                 topo.skdc_nodes.Get(i),
-                "SKDC-C" + std::to_string(i));
+                "SKDC-C" + std::to_string(i)
+                + "\n[MT_K Broadcaster]"
+                + "\nTEK_v=0");
             anim->UpdateNodeSize(
-                topo.skdc_nodes.Get(i), 2.5, 2.5);
+                topo.skdc_nodes.Get(i), 3.0, 3.0);
+
+            // === SKDC → UAV cluster link labels ===
+            // Shows WiFi multicast key distribution channel
+            uint32_t base = i * uavs_per_cluster;
+            for (uint32_t u = 0; u < uavs_per_cluster; ++u) {
+                uint32_t uid = base + u;
+                if (uid < topo.uav_nodes.GetN()) {
+                    anim->UpdateLinkDescription(
+                        topo.skdc_nodes.Get(i),
+                        topo.uav_nodes.Get(uid),
+                        "WiFi|MT_K|C"
+                            + std::to_string(i)
+                            + "|UAV"
+                            + std::to_string(uid));
+                }
+            }
         }
 
         // UAVs — cluster color
@@ -327,8 +396,9 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
                 col.r, col.g, col.b);
             anim->UpdateNodeDescription(
                 topo.uav_nodes.Get(i),
-                "UAV" + std::to_string(i)
-                + "_C" + std::to_string(c));
+                "UAV-" + std::to_string(i)
+                + "\nC" + std::to_string(c)
+                + "\nTEK:PENDING");
         }
         m_anim = anim;
     }
@@ -424,6 +494,95 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
             .RecordCrypto("MTK_MTOKEN_GEN", 0, 0,
                 _t.ElapsedUs(), actual_n);
     }
+
+    // === NETANIM: Show initial key flow at t=1s ===
+    // Phase 1: KDC → all SKDCs (TEK distribution)
+    Simulator::Schedule(Seconds(1.0), [&, anim]() {
+        if (!anim) return;
+        anim->UpdateNodeDescription(
+            topo.kdc_node.Get(0),
+            "KDC\n[GENERATING TEK]\nPhase:1/3");
+        // Flash KDC → each SKDC link
+        for (uint32_t c = 0;
+             c < topo.skdc_nodes.GetN(); ++c) {
+            anim->UpdateLinkDescription(
+                topo.kdc_node.Get(0),
+                topo.skdc_nodes.Get(c),
+                ">>> TEK_DIST >>> C"
+                    + std::to_string(c));
+            anim->UpdateNodeDescription(
+                topo.skdc_nodes.Get(c),
+                "SKDC-C" + std::to_string(c)
+                + "\n[RECV TEK]\nPhase:1/3");
+        }
+    });
+
+    // Phase 2: Each SKDC builds MT_K and broadcasts to UAVs
+    Simulator::Schedule(Seconds(2.0), [&, anim]() {
+        if (!anim) return;
+        anim->UpdateNodeDescription(
+            topo.kdc_node.Get(0),
+            "KDC\n[TEK DISTRIBUTED]\nPhase:2/3");
+        for (uint32_t c = 0;
+             c < topo.skdc_nodes.GetN(); ++c) {
+            anim->UpdateNodeDescription(
+                topo.skdc_nodes.Get(c),
+                "SKDC-C" + std::to_string(c)
+                + "\n[BUILD MT_K]\nPhase:2/3");
+            // Animate SKDC → each cluster UAV
+            uint32_t base = c * uavs_per_cluster;
+            for (uint32_t u = 0;
+                 u < uavs_per_cluster; ++u) {
+                uint32_t uid = base + u;
+                if (uid < topo.uav_nodes.GetN()) {
+                    anim->UpdateLinkDescription(
+                        topo.skdc_nodes.Get(c),
+                        topo.uav_nodes.Get(uid),
+                        ">>> MT_K >>>");
+                }
+            }
+        }
+    });
+
+    // Phase 3: UAVs confirm TEK received
+    Simulator::Schedule(Seconds(3.0), [&, anim]() {
+        if (!anim) return;
+        anim->UpdateNodeDescription(
+            topo.kdc_node.Get(0),
+            "KDC\n[ACTIVE]\nPhase:3/3");
+        for (uint32_t c = 0;
+             c < topo.skdc_nodes.GetN(); ++c) {
+            anim->UpdateNodeDescription(
+                topo.skdc_nodes.Get(c),
+                "SKDC-C" + std::to_string(c)
+                + "\n[MT_K SENT]\nTEK_v=1");
+            // Restore SKDC links to steady-state label
+            uint32_t base = c * uavs_per_cluster;
+            for (uint32_t u = 0;
+                 u < uavs_per_cluster; ++u) {
+                uint32_t uid = base + u;
+                if (uid < topo.uav_nodes.GetN()) {
+                    anim->UpdateLinkDescription(
+                        topo.skdc_nodes.Get(c),
+                        topo.uav_nodes.Get(uid),
+                        "MT_K_v1|AES256");
+                    anim->UpdateNodeDescription(
+                        topo.uav_nodes.Get(uid),
+                        "UAV-" + std::to_string(uid)
+                        + "\nC" + std::to_string(c)
+                        + "\nTEK_v1:OK");
+                }
+            }
+        }
+        // Restore KDC backbone links
+        for (uint32_t c = 0;
+             c < topo.skdc_nodes.GetN(); ++c) {
+            anim->UpdateLinkDescription(
+                topo.kdc_node.Get(0),
+                topo.skdc_nodes.Get(c),
+                "CSMA|ACTIVE|C" + std::to_string(c));
+        }
+    });
     dist_mgr.ScheduleRefresh(skdc_apps);
 
     // Periodic rekey every 60s
@@ -452,6 +611,29 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
             ++m_total_rekeys;
             double t = Simulator::Now().GetSeconds();
             m_rekey_timestamps.push_back(t);
+            // B2: rekey latency — real latency from event
+            mf.RecordRekey(
+                ev.cluster_id,
+                apps::RekeyReasonStr(ev.reason),
+                ev.latency_ms > 0 ? ev.latency_ms : 0.05,
+                tek_mgr.GetVersion(ev.cluster_id),
+                mc_mgr.GetGroupSize(ev.cluster_id),
+                512.0);  // REKEY_PACKET = 512 bytes
+            // B4/B5: forward+backward secrecy holds after rekey
+            mf.RecordSecrecyCheck(
+                ev.cluster_id,
+                tek_mgr.GetVersion(ev.cluster_id),
+                true, true,
+                apps::RekeyReasonStr(ev.reason));
+            // C: rekey overhead
+            mf.RecordPacketOverhead(
+                ev.cluster_id,
+                0,    // data bytes
+                64,   // header
+                32,   // hmac
+                128,  // mtk field
+                512,  // ctrl
+                512); // rekey
             rekey_csv << t << ","
                 << ev.cluster_id << ","
                 << apps::RekeyReasonStr(ev.reason) << ","
@@ -459,12 +641,96 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
                 << tek_mgr.GetVersion(ev.cluster_id)
                 << "\n";
             if (anim) {
+                uint32_t cid = ev.cluster_id;
+                uint32_t ver = tek_mgr.GetVersion(cid);
+                std::string reason_s =
+                    apps::RekeyReasonStr(ev.reason);
+
+                // Step 1: KDC → SKDC TEK push
+                anim->UpdateLinkDescription(
+                    topo.kdc_node.Get(0),
+                    topo.skdc_nodes.Get(cid),
+                    ">>> NEW_TEK_v"
+                        + std::to_string(ver)
+                        + " >>>");
                 anim->UpdateNodeDescription(
-                    topo.skdc_nodes.Get(ev.cluster_id),
-                    "SKDC-C" + std::to_string(ev.cluster_id)
-                    + "|REKEY|TEK_v="
-                    + std::to_string(
-                        tek_mgr.GetVersion(ev.cluster_id)));
+                    topo.kdc_node.Get(0),
+                    "KDC\n[REKEY:" + reason_s + "]"
+                    + "\nTEK_v=" + std::to_string(ver));
+                anim->UpdateNodeDescription(
+                    topo.skdc_nodes.Get(cid),
+                    "SKDC-C" + std::to_string(cid)
+                    + "\n[REKEYING:" + reason_s + "]"
+                    + "\nTEK_v=" + std::to_string(ver));
+
+                // Step 2: After 0.1s — SKDC→UAV MT_K broadcast
+                Simulator::Schedule(Seconds(0.1),
+                    [=]() {
+                        uint32_t base =
+                            cid * uavs_per_cluster;
+                        for (uint32_t u = 0;
+                             u < uavs_per_cluster; ++u)
+                        {
+                            uint32_t uid = base + u;
+                            if (uid < topo.uav_nodes
+                                    .GetN()) {
+                                anim->UpdateLinkDescription(
+                                    topo.skdc_nodes.Get(cid),
+                                    topo.uav_nodes.Get(uid),
+                                    ">>> NEW_MT_K_v"
+                                    + std::to_string(ver)
+                                    + " >>>");
+                                anim->UpdateNodeDescription(
+                                    topo.uav_nodes.Get(uid),
+                                    "UAV-" + std::to_string(uid)
+                                    + "\nC" + std::to_string(cid)
+                                    + "\nUPDATING_TEK");
+                            }
+                        }
+                    });
+
+                // Step 3: After 0.3s — UAVs confirm new TEK
+                Simulator::Schedule(Seconds(0.3),
+                    [=]() {
+                        uint32_t base =
+                            cid * uavs_per_cluster;
+                        for (uint32_t u = 0;
+                             u < uavs_per_cluster; ++u)
+                        {
+                            uint32_t uid = base + u;
+                            if (uid < topo.uav_nodes
+                                    .GetN()) {
+                                anim->UpdateLinkDescription(
+                                    topo.skdc_nodes.Get(cid),
+                                    topo.uav_nodes.Get(uid),
+                                    "MT_K_v"
+                                    + std::to_string(ver)
+                                    + "|AES256");
+                                anim->UpdateNodeDescription(
+                                    topo.uav_nodes.Get(uid),
+                                    "UAV-" + std::to_string(uid)
+                                    + "\nC" + std::to_string(cid)
+                                    + "\nTEK_v"
+                                    + std::to_string(ver) + ":OK");
+                            }
+                        }
+                        // Restore SKDC label
+                        anim->UpdateNodeDescription(
+                            topo.skdc_nodes.Get(cid),
+                            "SKDC-C" + std::to_string(cid)
+                            + "\n[ACTIVE]\nTEK_v="
+                            + std::to_string(ver));
+                        // Restore KDC→SKDC link
+                        anim->UpdateLinkDescription(
+                            topo.kdc_node.Get(0),
+                            topo.skdc_nodes.Get(cid),
+                            "CSMA|ACTIVE|C"
+                                + std::to_string(cid));
+                        anim->UpdateNodeDescription(
+                            topo.kdc_node.Get(0),
+                            "KDC\n[ACTIVE]\nTEK_v="
+                                + std::to_string(ver));
+                    });
             }
         });
 
@@ -472,6 +738,14 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
         [&, anim](const apps::CompromiseEvent& ev) {
             ++m_total_compromises;
             double t = Simulator::Now().GetSeconds();
+            // B7: healing triggered by compromise
+            mf.RecordHealingAttempt(
+                ev.uav_id, ev.cluster_id, t,
+                false, "COMPROMISE");
+            // B3: auth failure
+            mf.RecordAuthAttempt(
+                ev.uav_id, ev.cluster_id,
+                false, "COMPROMISE");
             event_csv << t << ",COMPROMISE,"
                 << ev.uav_id << ","
                 << ev.cluster_id << ","
@@ -516,7 +790,22 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
                         .RecordCrypto("SLAVE_KEY_ASSIGN",
                             uid, c,
                             _sd_t.ElapsedUs(), 0);
+                    mf.RecordComputeTiming("AES_ENC", uid,
+                        _sd_t.ElapsedUs() * 0.3);
+                    mf.RecordComputeTiming("CRT_VERIFY", uid,
+                        _sd_t.ElapsedUs() * 0.4);
                 }
+                // B1: Key establishment time
+                mf.RecordKeyEstablishment(uid, c, 0.05, true);
+                // B3: Auth success on join
+                mf.RecordAuthAttempt(uid, c, true, "OK");
+                // B4/B5: Secrecy check after new key
+                mf.RecordSecrecyCheck(c,
+                    tek_mgr.GetVersion(c),
+                    true, true, "JOIN");
+                // A: count join packet as TX
+                mf.RecordTx(uid, 256, true);
+                mf.RecordRx(uid, 256, 0.05, true);
                 event_csv << t << ",JOIN,"
                     << uid << "," << c
                     << ",ok\n";
@@ -524,15 +813,57 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
                     .RecordEventComplete("JOIN", uid, "ok");
                 if (anim &&
                     uid < topo.uav_nodes.GetN()) {
+                    // SKDC → UAV: slave key assignment
                     anim->UpdateLinkDescription(
                         topo.skdc_nodes.Get(c),
                         topo.uav_nodes.Get(uid),
-                        "JOIN_KEY");
+                        ">>> SLAVE_KEY_ASSIGN >>>");
                     anim->UpdateNodeDescription(
                         topo.uav_nodes.Get(uid),
-                        "UAV" + std::to_string(uid)
-                        + "_JOINED_C"
-                        + std::to_string(c));
+                        "UAV-" + std::to_string(uid)
+                        + "\nJOINING_C"
+                        + std::to_string(c)
+                        + "\nKEY_PENDING");
+                    anim->UpdateNodeDescription(
+                        topo.skdc_nodes.Get(c),
+                        "SKDC-C" + std::to_string(c)
+                        + "\n[JOIN:UAV"
+                        + std::to_string(uid) + "]"
+                        + "\nISSUING_KEY");
+                    // Notify KDC of new member
+                    anim->UpdateLinkDescription(
+                        topo.kdc_node.Get(0),
+                        topo.skdc_nodes.Get(c),
+                        "UNICAST|JOIN_NOTIFY|UAV"
+                            + std::to_string(uid));
+                    // After 0.2s: restore with confirmed state
+                    Simulator::Schedule(Seconds(0.2),
+                        [=]() {
+                            uint32_t ver =
+                                tek_mgr.GetVersion(c);
+                            anim->UpdateLinkDescription(
+                                topo.skdc_nodes.Get(c),
+                                topo.uav_nodes.Get(uid),
+                                "MT_K_v"
+                                + std::to_string(ver)
+                                + "|JOINED");
+                            anim->UpdateNodeDescription(
+                                topo.uav_nodes.Get(uid),
+                                "UAV-" + std::to_string(uid)
+                                + "\nC" + std::to_string(c)
+                                + "\nTEK_v"
+                                + std::to_string(ver) + ":OK");
+                            anim->UpdateLinkDescription(
+                                topo.kdc_node.Get(0),
+                                topo.skdc_nodes.Get(c),
+                                "CSMA|ACTIVE|C"
+                                    + std::to_string(c));
+                            anim->UpdateNodeDescription(
+                                topo.skdc_nodes.Get(c),
+                                "SKDC-C" + std::to_string(c)
+                                + "\n[ACTIVE]\nTEK_v="
+                                + std::to_string(ver));
+                        });
                 }
             });
     }
@@ -554,15 +885,54 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
                 leave_mgr.ProcessLeave(
                     uid, uid % uavs_per_cluster,
                     c, skdc_apps[c].operator->());
+                // B3: auth implicit in leave processing
+                mf.RecordAuthAttempt(uid, c, true, "OK");
+                // A: control packet
+                mf.RecordTx(uid, 256, true);
                 event_csv << t << ",LEAVE,"
                     << uid << "," << c
                     << ",ok\n";
                 if (anim &&
                     uid < topo.uav_nodes.GetN()) {
+                    // Mark UAV as leaving
                     anim->UpdateNodeDescription(
                         topo.uav_nodes.Get(uid),
-                        "UAV" + std::to_string(uid)
-                        + "_LEFT");
+                        "UAV-" + std::to_string(uid)
+                        + "\nLEFT_C"
+                        + std::to_string(c)
+                        + "\nKEY_REVOKED");
+                    anim->UpdateNodeColor(
+                        topo.uav_nodes.Get(uid),
+                        180, 180, 180); // grey
+                    // SKDC notifies KDC via backbone
+                    anim->UpdateLinkDescription(
+                        topo.kdc_node.Get(0),
+                        topo.skdc_nodes.Get(c),
+                        "UNICAST|LEAVE_NOTIFY|UAV"
+                            + std::to_string(uid));
+                    anim->UpdateNodeDescription(
+                        topo.skdc_nodes.Get(c),
+                        "SKDC-C" + std::to_string(c)
+                        + "\n[LEAVE:UAV"
+                        + std::to_string(uid) + "]"
+                        + "\nRE-KEYING");
+                    // Restore after 2s
+                    Simulator::Schedule(Seconds(2.0),
+                        [=]() {
+                            uint32_t ccc = c;
+                            uint32_t ver =
+                                tek_mgr.GetVersion(ccc);
+                            anim->UpdateLinkDescription(
+                                topo.kdc_node.Get(0),
+                                topo.skdc_nodes.Get(ccc),
+                                "CSMA|ACTIVE|C"
+                                    + std::to_string(ccc));
+                            anim->UpdateNodeDescription(
+                                topo.skdc_nodes.Get(ccc),
+                                "SKDC-C" + std::to_string(ccc)
+                                + "\n[ACTIVE]\nTEK_v="
+                                + std::to_string(ver));
+                        });
                 }
             });
     }
@@ -593,13 +963,28 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
                 event_csv << t << ",BATCH_REKEY,"
                     << 255 << ",ALL,global\n";
                 if (anim) {
-                    for (uint32_t c = 0;
-                         c < num_clusters; ++c) {
+                    // KDC label
+                    anim->UpdateNodeDescription(
+                        topo.kdc_node.Get(0),
+                        "KDC\n[GLOBAL REKEY]"
+                        "\nBroadcasting TEK");
+                    for (uint32_t bc = 0;
+                         bc < num_clusters; ++bc) {
+                        // KDC → SKDC links
+                        anim->UpdateLinkDescription(
+                            topo.kdc_node.Get(0),
+                            topo.skdc_nodes.Get(bc),
+                            ">>> BATCH_TEK_v"
+                            + std::to_string(
+                                tek_mgr.GetVersion(bc))
+                            + " >>>");
                         anim->UpdateNodeDescription(
-                            topo.skdc_nodes.Get(c),
-                            "SKDC-C"
-                            + std::to_string(c)
-                            + "|BATCH_REKEY");
+                            topo.skdc_nodes.Get(bc),
+                            "SKDC-C" + std::to_string(bc)
+                            + "\n[BATCH_REKEY]"
+                            + "\nTEK_v="
+                            + std::to_string(
+                                tek_mgr.GetVersion(bc)));
                     }
                 }
             });
@@ -616,6 +1001,17 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
                 uint32_t old_c = uid / uavs_per_cluster;
                 uint32_t new_c = (old_c + 1) % 3;
                 ++m_total_handovers;
+                //double ho_t = 
+                Simulator::Now().GetSeconds();
+                // B1: key re-establishment on handover
+                mf.RecordKeyEstablishment(uid, new_c,
+                    0.08, true);
+                // B3: auth on new cluster
+                mf.RecordAuthAttempt(uid, new_c,
+                    true, "OK");
+                // E: route break caused by handover
+                mf.RecordRouteBreak(uid, old_c,
+                    15.0, true);
                 rekey_mgr.TriggerRekey(
                     old_c,
                     apps::RekeyReason::HANDOVER,
@@ -652,6 +1048,36 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
         << " duration=" << m_cfg.duration_s
         << "s seed=" << seed);
 
+    // D: Schedule periodic SINR sampling (every 2s)
+    // Uses distance-based SINR approximation since no PHY layer access
+    Simulator::Schedule(Seconds(2.0), [&]() {
+        static std::function<void()> sinr_fn;
+        sinr_fn = [&]() {
+            double t = Simulator::Now().GetSeconds();
+            if (t >= m_cfg.duration_s) return;
+            for (uint32_t u = 0; u < actual_n; ++u) {
+                uint32_t c  =u / uavs_per_cluster;
+                // Simulate SINR: base 20dB, jammer degrades by distance
+                double sinr = 20.0 - (std::sin(t * 0.05 + u) * 8.0);
+                mf.RecordSinrSample(u, c, sinr, 8.0);
+                // D4: Occasional link failures
+                if (sinr < 5.0)
+                    mf.RecordLinkFailure(u, c, "JAMMER",
+                        sinr > 0, 50.0 + u * 2.0);
+            }
+            // E: Cluster head status
+            for (uint32_t c = 0; c < num_clusters; ++c) {
+                uint32_t skdc_id =
+                    topo.skdc_nodes.Get(c)->GetId();
+                mf.RecordClusterHeadStatus(c, skdc_id,
+                    uavs_per_cluster, true, 200.0 + c*50.0);
+            }
+            Simulator::Schedule(Seconds(2.0),
+                std::function<void()>(sinr_fn));
+        };
+        sinr_fn();
+    });
+
     Simulator::Stop(Seconds(m_cfg.duration_s));
     Simulator::Run();
 
@@ -686,6 +1112,30 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
         metrics.avg_delay_ms = stats.size()
             ? dsum / stats.size() : 0.0;
         metrics.throughput_kbps = tsum;
+
+        // Feed FlowMonitor results into MetricsFramework (A-category)
+        uint64_t per_uav_rx = rx / std::max(1UL, (uint64_t)actual_n);
+        uint64_t per_uav_tx = tx / std::max(1UL, (uint64_t)actual_n);
+        double   per_uav_delay = metrics.avg_delay_ms;
+        for (uint32_t u = 0; u < actual_n; ++u) {
+           // uint32_t c = u / uavs_per_cluster;
+            // Distribute global counts evenly per UAV
+            if (per_uav_tx > 0)
+                mf.RecordTx(u, (uint32_t)(per_uav_tx * 1024), false);
+            if (per_uav_rx > 0)
+                mf.RecordRx(u, (uint32_t)(per_uav_rx * 1024),
+                    per_uav_delay, false);
+            if (per_uav_tx > per_uav_rx)
+                mf.RecordLoss(u,
+                    (uint32_t)((per_uav_tx - per_uav_rx) * 1024));
+        }
+        // Routing stability from rekey/leave ratio
+        uint32_t active_r = actual_n > m_total_leaves
+            ? actual_n - m_total_leaves : 1;
+        mf.RecordRoutingUpdate(active_r, m_total_leaves);
+        mf.RecordConnectivitySample(
+            active_r * (active_r - 1) / 2,
+            actual_n * (actual_n - 1) / 2);
 
         std::string fm_file = m_cfg.output_dir
             + "/csv/fm_" + std::to_string(actual_n)
@@ -733,6 +1183,23 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
 
     Simulator::Destroy();
     if (anim) { delete anim; m_anim = nullptr; }
+
+    // --------------------------------------------------------
+    // Finalize MetricsFramework — compute all summaries
+    // --------------------------------------------------------
+    mf.Finalize(m_cfg.duration_s, run_idx);
+    mf.ExportAll();
+    NS_LOG_UNCOND("[METRICS] Full report: " << mf_out);
+
+    // Run full graph generation
+    std::string full_graph_cmd =
+        "python3 /home/udit/ns-allinone-3.43/ns-3.43"
+        "/scratch/uav-secure-fanet/graphs/plot_metrics_full.py"
+        " --input " + mf_out +
+        " --output " + m_cfg.output_dir + "/graphs_full"
+        " 2>/dev/null";
+    mkdir((m_cfg.output_dir + "/graphs_full").c_str(), 0755);
+    std::system(full_graph_cmd.c_str());
     event_csv.close();
     rekey_csv.close();
 

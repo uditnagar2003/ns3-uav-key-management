@@ -1,0 +1,2 @@
+time_s,uav_id,cluster_id,velocity_mps,triggered_rekey
+80,1,0,15,1

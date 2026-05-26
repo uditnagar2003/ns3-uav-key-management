@@ -66,6 +66,7 @@
 #include "metrics/uav-sinr-metrics.h"
 #include "metrics/uav-csv-export.h"
 #include "metrics/uav-pcap-export.h"
+#include "metrics/uav-metrics-framework.h"
 
 #include "scenario/rekey_perf_scenario.h"
 
@@ -113,7 +114,8 @@ static void ScheduledLeave(
     std::array<Ptr<apps::SkdcApplication>, 3>*    skdc_apps,
     visualization::NodeColorManager*              color_mgr,
     visualization::PacketVizManager*              pkt_viz,
-    visualization::EventAnnotationManager*        evt_ann)
+    visualization::EventAnnotationManager*        evt_ann,
+    visualization::NetAnimEnhancer*               enhancer)
 {
     NS_LOG_UNCOND("[t=" << Simulator::Now().GetSeconds()
         << "s] LEAVE EVENT: UAV3 leaving C0");
@@ -122,6 +124,9 @@ static void ScheduledLeave(
     pkt_viz->OnRekeyBroadcast(0, 0);
     evt_ann->OnLeave(3);
     evt_ann->OnRekey(0);
+    if (enhancer) enhancer->OnLeaveEvent(3, 0);
+    if (enhancer) enhancer->OnRekeyEvent(0, 0,
+        apps::RekeyReason::LEAVE);
 }
 
 // Handover: UAV5 C0→C1 at t=60s
@@ -130,7 +135,8 @@ static void ScheduledHandover(
     std::array<Ptr<apps::SkdcApplication>, 3>*    skdc_apps,
     visualization::NodeColorManager*              color_mgr,
     visualization::PacketVizManager*              pkt_viz,
-    visualization::EventAnnotationManager*        evt_ann)
+    visualization::EventAnnotationManager*        evt_ann,
+    visualization::NetAnimEnhancer*               enhancer)
 {
     NS_LOG_UNCOND("[t=" << Simulator::Now().GetSeconds()
         << "s] HANDOVER: UAV5 C0→C1");
@@ -141,6 +147,7 @@ static void ScheduledHandover(
     evt_ann->OnHandover(5);
     evt_ann->OnRekey(0);
     evt_ann->OnRekey(1);
+    if (enhancer) enhancer->OnHandoverEvent(5, 0, 1);
 }
 
 // Join: UAV 19 (new) joins C2 at t=90s
@@ -148,7 +155,8 @@ static void ScheduledJoin(
     apps::JoinEventManager*                       join_mgr,
     std::array<Ptr<apps::SkdcApplication>, 3>*    skdc_apps,
     visualization::PacketVizManager*              pkt_viz,
-    visualization::EventAnnotationManager*        evt_ann)
+    visualization::EventAnnotationManager*        evt_ann,
+    visualization::NetAnimEnhancer*               enhancer)
 {
     NS_LOG_UNCOND("[t=" << Simulator::Now().GetSeconds()
         << "s] JOIN: UAV6 rejoining C2");
@@ -157,6 +165,8 @@ static void ScheduledJoin(
     pkt_viz->OnJoinRequest(6, 2);
     pkt_viz->OnMtkBroadcast(2, 2, 1);
     evt_ann->OnJoin(6);
+    if (enhancer) enhancer->OnJoinEvent(6, 2);
+    if (enhancer) enhancer->OnMtkBroadcast(2, 2, 1);
 }
 
 // Global rekey at t=150s
@@ -164,7 +174,8 @@ static void ScheduledGlobalRekey(
     apps::RekeyManager*                           rekey_mgr,
     std::array<Ptr<apps::SkdcApplication>, 3>*    skdc_apps,
     visualization::PacketVizManager*              pkt_viz,
-    visualization::EventAnnotationManager*        evt_ann)
+    visualization::EventAnnotationManager*        evt_ann,
+    visualization::NetAnimEnhancer*               enhancer)
 {
     NS_LOG_UNCOND("[t=" << Simulator::Now().GetSeconds()
         << "s] GLOBAL REKEY: KDC-initiated");
@@ -174,6 +185,8 @@ static void ScheduledGlobalRekey(
         pkt_viz->OnRekeyBroadcast(c, c);
         evt_ann->OnRekey(c);
         evt_ann->OnTekRotation(c);
+        if (enhancer) enhancer->OnRekeyEvent(c, 0,
+            apps::RekeyReason::KDC_INIT);
     }
 }
 
@@ -465,6 +478,7 @@ int main(int argc, char* argv[])
         enhancer.Initialize();
         enhancer.SchedulePeriodicLabelUpdate(1.0);
         enhancer.HookJammerManager(&jammer_mgr, 2.0);
+        enhancer.HookRekeyManager(&rekey_mgr);
     }
 
     // Annotate initial MT_K broadcasts
@@ -522,23 +536,27 @@ int main(int argc, char* argv[])
     Simulator::Schedule(Seconds(30.0),
         &ScheduledLeave,
         &leave_mgr, &rekey_mgr, &skdc_apps,
-        &color_mgr, &pkt_viz, &evt_ann);
+        &color_mgr, &pkt_viz, &evt_ann,
+        enable_anim ? &enhancer : nullptr);
 
     // t=60s: Handover
     Simulator::Schedule(Seconds(60.0),
         &ScheduledHandover,
         &ho_mgr, &skdc_apps,
-        &color_mgr, &pkt_viz, &evt_ann);
+        &color_mgr, &pkt_viz, &evt_ann,
+        enable_anim ? &enhancer : nullptr);
 
     // t=90s: Join
     Simulator::Schedule(Seconds(90.0),
         &ScheduledJoin,
-        &join_mgr, &skdc_apps, &pkt_viz, &evt_ann);
+        &join_mgr, &skdc_apps, &pkt_viz, &evt_ann,
+        enable_anim ? &enhancer : nullptr);
 
     // t=150s: Global rekey
     Simulator::Schedule(Seconds(150.0),
         &ScheduledGlobalRekey,
-        &rekey_mgr, &skdc_apps, &pkt_viz, &evt_ann);
+        &rekey_mgr, &skdc_apps, &pkt_viz, &evt_ann,
+        enable_anim ? &enhancer : nullptr);
 
     // -----------------------------------------------------------------------
     // Run simulation

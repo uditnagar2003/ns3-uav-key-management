@@ -1,0 +1,90 @@
+
+╔══════════════════════════════════════════════════════════════════════════════╗
+║         NETANIM VISUALIZATION GUIDE — UAV SECURE FANET                     ║
+╚══════════════════════════════════════════════════════════════════════════════╝
+
+FILE: output/uav-fanet-anim.xml
+Open with: netanim
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NODE COLORS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  RED    — KDC  (Node 0)         : Ground Key Distribution Center
+  ORANGE — SKDC (Nodes 1–3)     : Cluster Key Distribution Centers
+  GREEN  — UAV  (Nodes 4–21)    : Active, authenticated UAVs
+  BLACK  — Compromised UAV       : Detected compromised node (5% prob)
+  PURPLE — Jammer (Node 22)     : Mobile RF jammer
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHAT TO OBSERVE DURING PLAYBACK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  t=0–10s    INITIALIZATION
+             • SKDC nodes (orange) register with KDC (red)
+             • UAVs (green) join their cluster SKDCs
+             • Packet lines appear: CSMA backbone (KDC↔SKDC)
+             • Look for: MT_K broadcast lines from each SKDC to its 6 UAVs
+
+  t=30s      LEAVE EVENT (UAV 3, Cluster 0)
+             • UAV 3 label changes to indicate LEAVE
+             • SKDC 0 broadcasts REKEY packet to remaining C0 members
+             • Observe: green packet lines from SKDC0 to UAV {0,1,2,4,5}
+
+  t=60s      HANDOVER (UAV 5, Cluster 0 → Cluster 1)
+             • UAV 5 moves geographically toward Cluster 1
+             • Color briefly changes (handover in progress)
+             • OLD SKDC 0 sends rekey to C0; NEW SKDC 1 sends rekey to C1
+             • Both clusters show simultaneous MT_K broadcasts
+
+  t=90s      JOIN EVENT (New UAV, Cluster 2)
+             • New node appears near Cluster 2
+             • SKDC 2 sends unicast key establishment packet
+             • Then broadcasts updated MT_K to all C2 members
+
+  t=120s     COMPROMISE EVENT
+             • A random UAV turns BLACK
+             • SKDC broadcasts forced rekey (COMPROMISE trigger)
+             • KDC is notified (packet line to red KDC node)
+
+  ONGOING    JAMMER MOVEMENT
+             • Purple node moves continuously (RandomWaypoint)
+             • Nearby UAV nodes may briefly change to lighter color
+               indicating degraded SINR (< 8 dB threshold)
+             • Packet loss visible as fewer transmission lines near jammer
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+PACKET COLORS IN NETANIM (if supported by your NetAnim version)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Blue lines   — DATA packets (AES-256 encrypted payload)
+  Orange lines — MT_K broadcast packets (CRT multicast key)
+  Red lines    — REKEY packets (triggered rekeying)
+  Yellow lines — JOIN/AUTH packets
+  Purple lines — HANDOVER packets
+  Gray lines   — OLSR routing updates (HELLO/TC)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+METRICS TO READ IN REAL TIME (Statistics Panel)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  In NetAnim:  View → Statistics Window
+  Expected per-node counters:
+    • Packets TX / RX
+    • Bytes TX / RX
+  Use these to compute live PDR per UAV.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+NETANIM SETTINGS FOR BEST VIEW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  Playback speed: 0.01x (very slow — 300s simulation needs slow play)
+  Packet size:    Scale to 0.5–1.0 for visibility
+  Show routes:    Enable OLSR route display (View → Show Routes)
+  Node labels:    Enable (View → Show Node IDs)
+  Zoom:           1500×1500m simulation area; set canvas to fit
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TOPOLOGY AT A GLANCE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  1 KDC  +  3 SKDCs  +  18 UAVs  +  1 Jammer  =  23 nodes total
+  3 clusters × 6 UAVs each
+  CSMA backbone: KDC ↔ SKDC0 ↔ SKDC1 ↔ SKDC2
+  WiFi adhoc:    802.11a, 5GHz, 26Mbps, 1500×1500m area
+  Routing:       OLSR (HELLO=2s, TC=5s)

@@ -1,4 +1,0 @@
-time_s,cluster_id,trigger,latency_ms,tek_version
-25,0,LEAVE,0.05,2
-40,0,LEAVE,0.05,3
-50,0,COMPROMISE,0.08,4

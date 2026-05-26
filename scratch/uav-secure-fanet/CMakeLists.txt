@@ -68,6 +68,7 @@ set(uav_sources
     metrics/uav-sinr-metrics.cc
     metrics/uav-csv-export.cc
     metrics/uav-pcap-export.cc
+    metrics/uav-metrics-framework.cc
     metrics/uav-timing-profiler.cc
     scenario/rekey_perf_scenario.cc
 )
