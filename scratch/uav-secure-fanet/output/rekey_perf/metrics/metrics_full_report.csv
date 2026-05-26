@@ -20,10 +20,10 @@ C,rekey_overhead,0.410256
 C,storage_per_uav_bytes,1568
 C,ctrl_bytes_per_sec,27.3067
 C,rekey_msg_cost_bytes,512
-C,aes_enc_us,15464.1
+C,aes_enc_us,13021.8
 C,aes_dec_us,0
 C,hmac_us,0
-C,crt_verify_us,20620.1
+C,crt_verify_us,17363.5
 D,avg_sinr_db,20.0136
 D,min_sinr_db,12.0001
 D,sinr_stddev_db,5.66252

@@ -158,7 +158,9 @@ public:
         utils::ByteUtils::WriteU32BE(buf.data()+13, old_idx);
         uint64_t ts = NowUs();
         utils::ByteUtils::WriteU64BE(buf.data()+17, ts);
-        auto nonce = AesGcm::GenerateIv();
+        auto nonce_key = AesGcm::GenerateKey();
+        std::array<uint8_t,12> nonce{};
+        std::memcpy(nonce.data(), nonce_key.data(), 12);
         std::memcpy(buf.data()+25, nonce.data(), 12);
         // pad nonce to 16 bytes (12 used)
         HmacKey hk; std::memcpy(hk.data(), gk.data(), 32);
@@ -265,7 +267,7 @@ public:
         utils::ByteUtils::WriteU32BE(aad.data()+5, new_cluster_out);
         try {
             auto plain = AesGcm::Decrypt(
-                aes_gk, ct, aad, iv, tag);
+                aes_gk, iv, ct, tag, aad);
             blob_out = SlaveKeyBlob::Deserialize(plain);
         } catch (...) { return false; }
         return true;
@@ -355,7 +357,7 @@ public:
         utils::ByteUtils::WriteU32BE(aad.data()+5, new_cluster_out);
         try {
             auto plain = AesGcm::Decrypt(
-                aes_gk, ct, aad, iv, tag);
+               aes_gk, iv, ct, tag, aad);
             blob_out = SlaveKeyBlob::Deserialize(plain);
         } catch (...) { return false; }
         return true;

@@ -1291,20 +1291,6 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
         + anim_xml + " 2>/dev/null";
     std::system(filter_cmd.c_str());
 
-    // Auto-filter OLSR packets from NetAnim XML
-    std::string anim_xml =
-        m_cfg.output_dir
-        + "/netanim/uav_rekey_"
-        + std::to_string(actual_n)
-        + "_run" + std::to_string(run_idx)
-        + ".xml";
-    std::string filter_cmd =
-        "python3 /home/udit/ns-allinone-3.43/ns-3.43"
-        "/scratch/uav-secure-fanet/graphs"
-        "/filter_olsr_from_netanim.py "
-        + anim_xml + " 2>/dev/null";
-    std::system(filter_cmd.c_str());
-
     // Run full graph generation
     std::string full_graph_cmd =
         "python3 /home/udit/ns-allinone-3.43/ns-3.43"
