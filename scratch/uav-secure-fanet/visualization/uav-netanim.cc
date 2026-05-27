@@ -92,11 +92,24 @@ void NetAnimManager::ApplyInitialColors()
             COLOR_SKDC.r, COLOR_SKDC.g, COLOR_SKDC.b);
     }
 
-    // UAVs — green
+    // UAVs — per-cluster colors
+    // C0=green, C1=orange-yellow, C2=cyan
+    static const struct { uint8_t r,g,b; }
+        CLUSTER_INIT_COLORS[3] = {
+            {  0, 200,  80},  // C0 green
+            {255, 165,   0},  // C1 orange
+            {  0, 200, 200},  // C2 cyan
+        };
+    uint32_t upc = m_topo->uav_nodes.GetN() /
+        std::max(1u, m_topo->skdc_nodes.GetN());
     for (uint32_t i = 0; i < m_topo->uav_nodes.GetN(); ++i) {
+        uint32_t c = (upc > 0) ? (i / upc) : 0;
+        if (c >= 3) c = 2;
         m_anim->UpdateNodeColor(
             m_topo->uav_nodes.Get(i),
-            COLOR_UAV.r, COLOR_UAV.g, COLOR_UAV.b);
+            CLUSTER_INIT_COLORS[c].r,
+            CLUSTER_INIT_COLORS[c].g,
+            CLUSTER_INIT_COLORS[c].b);
     }
 
     // Jammer — purple
@@ -108,6 +121,29 @@ void NetAnimManager::ApplyInitialColors()
 
     UAV_LOG_INFO(uav::log::channels::SYSTEM,
         "NetAnimManager: initial colors applied");
+
+    // Re-apply at t=0.5s to override any NS-3 default red overwrite
+    static const struct { uint8_t r,g,b; }
+        CLUSTER_COLORS_LATE[3] = {
+            {  0, 200,  80},
+            {255, 165,   0},
+            {  0, 200, 200},
+        };
+    uint32_t upc2 = m_topo->uav_nodes.GetN() /
+        std::max(1u, m_topo->skdc_nodes.GetN());
+    for (uint32_t i = 0; i < m_topo->uav_nodes.GetN(); ++i) {
+        uint32_t c = (upc2 > 0) ? (i / upc2) : 0;
+        if (c >= 3) c = 2;
+        uint8_t r = CLUSTER_COLORS_LATE[c].r;
+        uint8_t g = CLUSTER_COLORS_LATE[c].g;
+        uint8_t b = CLUSTER_COLORS_LATE[c].b;
+        ns3::Ptr<ns3::Node> nd = m_topo->uav_nodes.Get(i);
+        Simulator::Schedule(Seconds(0.5),
+            [anim_raw=m_anim.get(), nd, r, g, b]() {
+                if (anim_raw)
+                    anim_raw->UpdateNodeColor(nd, r, g, b);
+            });
+    }
 }
 
 // ---------------------------------------------------------------------------

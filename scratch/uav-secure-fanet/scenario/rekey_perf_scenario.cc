@@ -295,6 +295,79 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
         mf.RecordSwarmSnapshot(active, 0, 0, 0,
             (active * (active - 1)) / 2);
     };
+    // Apply correct cluster colors at t=0.5s
+    // (ensures colors set after NS-3 default initialization)
+    Simulator::Schedule(Seconds(0.5), [&]() {
+        auto* anim = static_cast<ns3::AnimationInterface*>(m_anim);
+        if (!anim) return;
+        // KDC
+        anim->UpdateNodeColor(topo.kdc_node.Get(0),
+            255, 0, 0);
+        anim->UpdateNodeDescription(topo.kdc_node.Get(0),
+            "KDC\n[Key Authority]\nTEK Generator");
+        // SKDCs
+        for (uint32_t c = 0; c < num_clusters; ++c) {
+            anim->UpdateNodeColor(
+                topo.skdc_nodes.Get(c), 255, 140, 0);
+            anim->UpdateNodeDescription(
+                topo.skdc_nodes.Get(c),
+                "SKDC-C" + std::to_string(c)
+                + "\nR=300m\nMEMBERS:6");
+            anim->UpdateNodeSize(
+                topo.skdc_nodes.Get(c), 3.0, 3.0);
+        }
+        // UAVs — cluster colors
+        // C0=green(0,200,80), C1=orange(255,165,0), C2=cyan(0,200,200)
+        uint8_t cr[3] = {0,   255, 0};
+        uint8_t cg[3] = {200, 165, 200};
+        uint8_t cb[3] = {80,  0,   200};
+        for (uint32_t u = 0; u < actual_n; ++u) {
+            uint32_t c = u / uavs_per_cluster;
+            if (c >= 3) c = 2;
+            anim->UpdateNodeColor(
+                topo.uav_nodes.Get(u),
+                cr[c], cg[c], cb[c]);
+            anim->UpdateNodeDescription(
+                topo.uav_nodes.Get(u),
+                "UAV-" + std::to_string(u)
+                + "\nC" + std::to_string(c)
+                + "\nTEK:PENDING");
+            anim->UpdateNodeSize(
+                topo.uav_nodes.Get(u), 1.5, 1.5);
+        }
+        // Jammer
+        if (topo.jammer_node.GetN() > 0) {
+            anim->UpdateNodeColor(
+                topo.jammer_node.Get(0), 150, 0, 200);
+            anim->UpdateNodeDescription(
+                topo.jammer_node.Get(0),
+                "JAMMER\n[30dBm]\nMobile");
+        }
+        NS_LOG_UNCOND("[ANIM_COLORS_APPLIED] t=0.5s");
+    });
+
+    // Apply cluster labels at t=3s (after TEK distribution)
+    Simulator::Schedule(Seconds(3.5), [&]() {
+        auto* anim = static_cast<ns3::AnimationInterface*>(m_anim);
+        if (!anim) return;
+        uint8_t cr[3] = {0,   255, 0};
+        uint8_t cg[3] = {200, 165, 200};
+        uint8_t cb[3] = {80,  0,   200};
+        for (uint32_t u = 0; u < actual_n; ++u) {
+            uint32_t c = u / uavs_per_cluster;
+            if (c >= 3) c = 2;
+            anim->UpdateNodeColor(
+                topo.uav_nodes.Get(u),
+                cr[c], cg[c], cb[c]);
+            anim->UpdateNodeDescription(
+                topo.uav_nodes.Get(u),
+                "UAV-" + std::to_string(u)
+                + "\nC" + std::to_string(c)
+                + "\nTEK_v1:OK");
+        }
+        NS_LOG_UNCOND("[ANIM_TEK_OK] t=3.5s all UAVs TEK:OK");
+    });
+
     // Schedule first snapshot at t=1s, recurring via lambda chain
     std::function<void()> snap_sched;
     snap_sched = [&]() {
@@ -1254,7 +1327,7 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
         << metrics.security_overhead);
 
     Simulator::Destroy();
-    if (anim) { delete anim; m_anim = nullptr; }
+    if (m_anim) { delete static_cast<ns3::AnimationInterface*>(m_anim); m_anim = nullptr; }
 
     // --------------------------------------------------------
     // Finalize MetricsFramework — compute all summaries
@@ -1281,20 +1354,26 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
 
 
 
-    // Auto-filter OLSR packets from NetAnim XML
+    // Post-process NetAnim XML: fix colors + remove OLSR
     if (anim) {
-        std::string anim_xml2 =
+        std::string anim_xml3 =
             m_cfg.output_dir
             + "/netanim/uav_rekey_"
             + std::to_string(actual_n)
             + "_run" + std::to_string(run_idx)
             + ".xml";
-        std::string filter_cmd2 =
+        // Run the comprehensive XML fixer
+        // (fixes colors, handover events, removes OLSR)
+        std::string fix_cmd =
             "python3 /home/udit/ns-allinone-3.43/ns-3.43"
             "/scratch/uav-secure-fanet/graphs"
-            "/filter_olsr_from_netanim.py "
-            + anim_xml2 + " 2>/dev/null";
-        std::system(filter_cmd2.c_str());
+            "/fix_netanim_xml.py "
+            + anim_xml3 + " "
+            + anim_xml3.substr(0, anim_xml3.size()-4)
+            + "_fixed.xml 2>/dev/null";
+        std::system(fix_cmd.c_str());
+        NS_LOG_UNCOND("[NETANIM_FIXED] "
+            << anim_xml3 << "_fixed.xml");
     }
 
     // Run full graph generation
