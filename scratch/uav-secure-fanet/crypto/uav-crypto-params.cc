@@ -278,10 +278,7 @@ CryptoParamsFile CryptoParamsLoader::LoadFromFile(
 
     // Validate GK present
     if (params.global_key_hex.size() != 64) {
-        NS_LOG_UNCOND("[WARN] global_bootstrap_key missing or "
-            "invalid in crypto_params.json — "
-            "handover d_i delivery will not work. "
-            "Regenerate with: python3 scripts/gen_crypto.py");
+        std::cerr << "[WARN] global_bootstrap_key missing in crypto_params.json" << std::endl;
     }
 
     UAV_LOG_INFO(uav::log::channels::CRYPTO,

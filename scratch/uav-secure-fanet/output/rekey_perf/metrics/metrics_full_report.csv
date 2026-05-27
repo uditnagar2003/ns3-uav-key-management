@@ -1,8 +1,8 @@
 category,metric,value
 A,pdr,0.733333
-A,throughput_kbps,2.56
-A,avg_delay_ms,9.3474
-A,jitter_ms,8.48733
+A,throughput_kbps,2.06848
+A,avg_delay_ms,1.08636
+A,jitter_ms,0.946066
 A,loss_ratio,0.4
 A,routing_stability,0.333333
 A,connectivity_ratio,0.0980392
@@ -20,10 +20,10 @@ C,rekey_overhead,0.410256
 C,storage_per_uav_bytes,1568
 C,ctrl_bytes_per_sec,27.3067
 C,rekey_msg_cost_bytes,512
-C,aes_enc_us,13021.8
+C,aes_enc_us,12744.6
 C,aes_dec_us,0
 C,hmac_us,0
-C,crt_verify_us,17363.5
+C,crt_verify_us,16993.8
 D,avg_sinr_db,20.0136
 D,min_sinr_db,12.0001
 D,sinr_stddev_db,5.66252

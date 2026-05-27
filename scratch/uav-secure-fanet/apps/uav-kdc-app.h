@@ -118,6 +118,11 @@ protected:
 private:
     // NS-3 socket
     ns3::Ptr<ns3::Socket>  m_socket;
+    ns3::Ptr<ns3::Socket>  m_telemetry_socket  = nullptr;
+    ns3::Ptr<ns3::Socket>  m_handover_socket   = nullptr;
+    crypto::GlobalKey      m_gk{};
+    std::ofstream          m_tel_csv;
+    utils::u64             m_telemetry_rx_count = 0;
 
     // References
     const routing::TopologyResult*   m_topo    = nullptr;

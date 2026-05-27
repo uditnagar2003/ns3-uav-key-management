@@ -33,6 +33,7 @@
 #include "headers/uav-rekey-packet.h"
 #include "headers/uav-auth-packet.h"
 #include "headers/uav-join-packet.h"
+#include "crypto/uav-handover-protocol.h"
 #include "headers/uav-packet-manager.h"
 #include "routing/uav-topology.h"
 #include "crypto/uav-crypto-params.h"
@@ -101,6 +102,14 @@ public:
     // -----------------------------------------------------------------------
 
     /// Decrypt MT_K using slave key → extract TEK
+    // Handover slave key delivery
+    void ReceiveJoinAccept(ns3::Ptr<ns3::Socket> s);
+    void UpdateSlaveKey(const crypto::SlaveKeyBlob& blob,
+                        uint32_t new_cluster,
+                        uint32_t new_index);
+    void SendKeyAck(uint32_t new_cluster,
+                    uint32_t new_index);
+
     bool DecryptMtk(const crypto::BigInt& mt_k,
                     const crypto::BigInt& n_group);
 
@@ -145,6 +154,9 @@ private:
 
     // Sockets
     ns3::Ptr<ns3::Socket> m_recv_socket;  // recv MTK/REKEY
+    ns3::Ptr<ns3::Socket>  m_join_acc_socket = nullptr; // recv JOIN_ACCEPT (9052)
+    ns3::Ptr<ns3::Socket>  m_ack_send_socket  = nullptr; // send KEY_ACK (9053)
+    crypto::GlobalKey      m_gk{};             // Global Bootstrap Key
     ns3::Ptr<ns3::Socket> m_send_socket;  // send DATA
 
     // Sequence counter

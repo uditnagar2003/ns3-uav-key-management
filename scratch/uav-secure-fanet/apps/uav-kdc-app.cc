@@ -366,8 +366,12 @@ void KdcApplication::ReceiveTelemetryFromSkdc(
 
         bool hmac_ok = false;
         try {
+            utils::HmacSha256 hmac_arr{};
+            if (recv_hmac.size() >= 32)
+                std::memcpy(hmac_arr.data(),
+                    recv_hmac.data(), 32);
             hmac_ok = crypto::HmacSha256Util::Verify(
-                hmac_key, pkt_data, recv_hmac);
+                hmac_key, pkt_data, hmac_arr);
         } catch (...) { hmac_ok = false; }
 
         if (!hmac_ok) {
@@ -406,7 +410,7 @@ void KdcApplication::ReceiveTelemetryFromSkdc(
         try {
             auto pt = crypto::AesGcm::Decrypt(
                 m_clusters[cid].current_tek,
-                ct, aad, iv, tag);
+                iv, ct, tag, aad);
             plaintext = std::string(pt.begin(), pt.end());
         } catch (const std::exception& e) {
             NS_LOG_UNCOND("[KDC_TEL_DROP] decrypt fail: "

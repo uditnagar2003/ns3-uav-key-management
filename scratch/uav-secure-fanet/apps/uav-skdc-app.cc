@@ -570,6 +570,7 @@ void SkdcApplication::ReceiveDataFromUav(
     ns3::Address from;
 
     while ((pkt = socket->RecvFrom(from))) {
+        std::string plaintext_str; // declared before any goto
         ++m_data_rx_count;
 
         ns3::Ipv4Address src_ip;
@@ -613,10 +614,11 @@ void SkdcApplication::ReceiveDataFromUav(
 
         bool hmac_ok = false;
         try {
+            utils::HmacSha256 hmac_arr{};
+            std::memcpy(hmac_arr.data(), recv_hmac.data(),
+                std::min((size_t)32, recv_hmac.size()));
             hmac_ok = crypto::HmacSha256Util::Verify(
-                m_state.hmac_key,
-                pkt_data,
-                recv_hmac);
+                m_state.hmac_key, pkt_data, hmac_arr);
         } catch (...) { hmac_ok = false; }
 
         NS_LOG_UNCOND("[SKDC_PIPE] step=HMAC_RESULT ok="
@@ -646,7 +648,6 @@ void SkdcApplication::ReceiveDataFromUav(
         //   [36-39] padding   4B
         //   [40-55] aes_tag   16B
         //   [56+]  ciphertext
-        std::string plaintext_str;
         try {
             // Offset to DataBody = 32 (header) + 16 (nonce)
             size_t body_off = 48;
@@ -657,8 +658,6 @@ void SkdcApplication::ReceiveDataFromUav(
             const uint8_t* bp =
                 pkt_data.data() + body_off;
 
-            uint32_t pt_len =
-                utils::ByteUtils::ReadU32BE(bp + 16);
             uint32_t ct_len =
                 utils::ByteUtils::ReadU32BE(bp + 20);
 
@@ -683,7 +682,7 @@ void SkdcApplication::ReceiveDataFromUav(
 
             auto pt = crypto::AesGcm::Decrypt(
                 m_state.current_tek,
-                ct, aad, iv, tag);
+                iv, ct, tag, aad);
 
             plaintext_str = std::string(
                 pt.begin(), pt.end());

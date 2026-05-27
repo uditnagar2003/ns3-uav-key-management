@@ -93,7 +93,7 @@ static constexpr double CLUSTER_CENTERS[3][2] = {
 
 // Cluster radius — UAV is member of nearest SKDC within this radius
 // If UAV moves outside ALL radii, it stays with nearest SKDC
-static constexpr double CLUSTER_RADIUS_M = 400.0;
+static constexpr double CLUSTER_RADIUS_M = 300.0;
 
 // Cluster colors for UAV nodes
 struct RgbColor { uint8_t r, g, b; };
@@ -936,10 +936,10 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
                         "UAV-" + std::to_string(uid)
                         + "\nLEFT_C"
                         + std::to_string(c)
-                        + "\nKEY_REVOKED");
+                        + "\nREJOINING");
                     anim->UpdateNodeColor(
                         topo.uav_nodes.Get(uid),
-                        180, 180, 180); // grey
+                        255, 255, 0); // yellow - handover
                     // SKDC notifies KDC via backbone
                     anim->UpdateLinkDescription(
                         topo.kdc_node.Get(0),
@@ -1277,33 +1277,25 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
         + anim_xml + " 2>/dev/null";
     std::system(filter_cmd.c_str());
 
-    // Auto-filter OLSR packets from NetAnim XML
-    std::string anim_xml =
-        m_cfg.output_dir
-        + "/netanim/uav_rekey_"
-        + std::to_string(actual_n)
-        + "_run" + std::to_string(run_idx)
-        + ".xml";
-    std::string filter_cmd =
-        "python3 /home/udit/ns-allinone-3.43/ns-3.43"
-        "/scratch/uav-secure-fanet/graphs"
-        "/filter_olsr_from_netanim.py "
-        + anim_xml + " 2>/dev/null";
-    std::system(filter_cmd.c_str());
+
+
+
 
     // Auto-filter OLSR packets from NetAnim XML
-    std::string anim_xml =
-        m_cfg.output_dir
-        + "/netanim/uav_rekey_"
-        + std::to_string(actual_n)
-        + "_run" + std::to_string(run_idx)
-        + ".xml";
-    std::string filter_cmd =
-        "python3 /home/udit/ns-allinone-3.43/ns-3.43"
-        "/scratch/uav-secure-fanet/graphs"
-        "/filter_olsr_from_netanim.py "
-        + anim_xml + " 2>/dev/null";
-    std::system(filter_cmd.c_str());
+    if (anim) {
+        std::string anim_xml2 =
+            m_cfg.output_dir
+            + "/netanim/uav_rekey_"
+            + std::to_string(actual_n)
+            + "_run" + std::to_string(run_idx)
+            + ".xml";
+        std::string filter_cmd2 =
+            "python3 /home/udit/ns-allinone-3.43/ns-3.43"
+            "/scratch/uav-secure-fanet/graphs"
+            "/filter_olsr_from_netanim.py "
+            + anim_xml2 + " 2>/dev/null";
+        std::system(filter_cmd2.c_str());
+    }
 
     // Run full graph generation
     std::string full_graph_cmd =

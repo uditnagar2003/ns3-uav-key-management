@@ -482,12 +482,12 @@ void NetAnimEnhancer::OnLeaveEvent(
         a->UpdateNodeDescription(
             m_topo->uav_nodes.Get(uav_id),
             "UAV-" + std::to_string(uav_id)
-            + "\nLEFT_C"
+            + "\nHANDOVER_C"
             + std::to_string(cluster_id));
-        // Grey for left UAV
+        // Yellow = handover in progress
         a->UpdateNodeColor(
             m_topo->uav_nodes.Get(uav_id),
-            128, 128, 128);
+            255, 255, 0);
     }
     if (m_evt_ann) m_evt_ann->OnLeave(uav_id);
 
