@@ -43,6 +43,7 @@
 #include "crypto/uav-replay.h"
 #include "utils/uav-types.h"
 #include "utils/uav-error.h"
+#include "uav-skdc-app.h"
 
 #include <string>
 
@@ -97,6 +98,7 @@ public:
     void SetCryptoParams(
         const crypto::CryptoParamsFile* params);
 
+    void SetSkdcApp(ns3::Ptr<apps::SkdcApplication> skdc) { m_skdc_app = skdc; }
     // -----------------------------------------------------------------------
     // UAV operations
     // -----------------------------------------------------------------------
@@ -143,6 +145,7 @@ protected:
     void StopApplication()  override;
 
 private:
+    ns3::Ptr<apps::SkdcApplication> m_skdc_app = nullptr;
     utils::u32 m_uav_id    = 0;
     utils::u32 m_uav_index = 0;
     utils::u32 m_cluster_id= 0;

@@ -390,6 +390,7 @@ int main(int argc, char* argv[])
                           i / UAVS_PER_CLUSTER);
         uav_app->SetTopology(&topo);
         uav_app->SetCryptoParams(&params);
+        uav_app->SetSkdcApp(skdc_apps[i / UAVS_PER_CLUSTER]);
         topo.uav_nodes.Get(i)->AddApplication(uav_app);
         uav_app->SetStartTime(Seconds(2.0));
         uav_app->SetStopTime(Seconds(duration));

@@ -13,6 +13,7 @@
 
 #include "crypto/uav-sha256.h"
 #include "apps/uav-skdc-app.h"
+#include "apps/REKEY_LATENCY_FIX.h"
 #include "utils/uav-logger.h"
 #include "utils/uav-log-channels.h"
 #include "utils/uav-time-utils.h"
@@ -436,6 +437,21 @@ void SkdcApplication::TriggerRekey(RekeyReason reason) {
         << " cluster=" << m_cluster_id
         << " reason=" << RekeyReasonToString(reason)
         << " version=" << m_state.rekey_version);
+
+    // REKEY LATENCY: record broadcast time
+    double _send_t = ns3::Simulator::Now().GetSeconds();
+    m_rekey_send_times[m_state.rekey_version] = _send_t;
+    m_rekey_ack_map[m_state.rekey_version]    = {};
+    ns3::Simulator::Schedule(ns3::Seconds(5.0),
+        [this, ver = m_state.rekey_version, exp = m_state.members.size()]() {
+            auto it = m_rekey_send_times.find(ver);
+            if (it == m_rekey_send_times.end()) return;
+            double lat = (ns3::Simulator::Now().GetSeconds() - it->second) * 1000.0;
+            WriteRekeyLatencyCsv(ver, it->second, lat, exp,
+                                 m_rekey_ack_map[ver].size(), "TIMEOUT");
+            m_rekey_send_times.erase(ver);
+            m_rekey_ack_map.erase(ver);
+        });
 
     BroadcastMtk();
 }
@@ -907,5 +923,35 @@ void SkdcApplication::ReceiveKeyAck(
     }
 }
 
+
+void SkdcApplication::OnUavRekeyAck(utils::u32 uav_id, utils::u32 tek_version) {
+    auto sit = m_rekey_send_times.find(tek_version);
+    if (sit == m_rekey_send_times.end()) return;
+    m_rekey_ack_map[tek_version].insert(uav_id);
+    if (m_rekey_ack_map[tek_version].size() >= m_state.members.size()) {
+        double lat = (ns3::Simulator::Now().GetSeconds() - sit->second) * 1000.0;
+        WriteRekeyLatencyCsv(tek_version, sit->second, lat,
+                             m_state.members.size(),
+                             m_rekey_ack_map[tek_version].size(), "OK");
+        m_rekey_send_times.erase(tek_version);
+        m_rekey_ack_map.erase(tek_version);
+    }
+}
+
+void SkdcApplication::WriteRekeyLatencyCsv(
+    utils::u32 version, double send_time, double latency_ms,
+    size_t expected, size_t received, const std::string& status)
+{
+    static bool header_written = false;
+    std::ofstream ofs("output/rekey_perf/metrics/rekey_latency_full.csv", std::ios::app);
+    if (!ofs.is_open()) return;
+    if (!header_written) {
+        ofs << "time_s,cluster_id,trigger,latency_ms,tek_version,members,msg_cost_bytes\n";
+        header_written = true;
+    }
+    ofs << send_time << "," << m_cluster_id << "," << status << ","
+        << latency_ms << "," << version << "," << expected << ","
+        << (512 * expected) << "\n";
+}
 } // namespace apps
 } // namespace uav

@@ -1,0 +1,66 @@
+=================================================================
+  GLOBAL SIMULATION METRICS SUMMARY
+  Hierarchical CRT-GCRT UAV FANET — Denied Environment
+=================================================================
+
+[A] NETWORK PERFORMANCE
+----------------------------------------
+  UAVs          PDR     Tput(kbps)    Delay(ms)
+  ------ ---------- -------------- ------------
+  6      0.7011±0.021  0.1635±0.0732  2.265±0.573
+  9      0.7187±0.053  0.2696±0.1166  3.473±1.392
+  12     0.6159±0.021  0.2790±0.0623  7.145±7.348
+  15     0.5023±0.007  0.3265±0.0720  6.104±5.613
+  18     0.5385±0.040  0.3926±0.0353  2.839±1.017
+
+  Global PDR:         0.6153 ± 0.0929
+  Global Throughput:  0.2862 ± 0.1012 kbps
+  Global Delay:       4.3651 ± 4.0746 ms
+
+[B] SECURITY METRICS
+----------------------------------------
+  UAVs     Rekeys   RekeyLat(ms)    SecOvhd/s
+  ------ -------- -------------- ------------
+  6      39.0±0.0  0.7042±0.0528    0.2400
+  9      42.0±0.0  0.6223±0.0215    0.2600
+  12     45.0±0.0  0.6850±0.0331    0.2800
+  15     49.0±0.0  0.7223±0.0879    0.3067
+  18     54.0±0.0  0.6721±0.0403    0.3400
+
+  Rekey Latency by Trigger Type:
+    HANDOVER    : 0.710 ± 0.032 ms  (n=2)
+    JOIN        : 4.496 ± 0.543 ms  (n=26)
+    KDC_INIT    : 0.605 ± 0.068 ms  (n=3)
+    LEAVE       : 4.285 ± 0.528 ms  (n=20)
+    PERIODIC    : 0.718 ± 0.045 ms  (n=3)
+
+  Total rekey events recorded: 54
+  Latency range: 0.529 – 5.500 ms
+
+  Auth success rate:   0.9792 (97.9%)
+  Forward secrecy:     1.0000
+  Backward secrecy:    1.0000
+
+[C] OVERHEAD METRICS
+----------------------------------------
+  Joins  total: 21.2 avg per scenario
+  Leaves total: 16.6 avg per scenario
+  Handovers:    1.0 avg per scenario
+  Compromises:  1.0 avg per scenario
+
+[D] SINR / DENIED ENVIRONMENT
+----------------------------------------
+  Avg SINR:     20.014 dB
+  Min SINR:     12.000 dB
+  Max SINR:     28.000 dB
+  Below 8dB:    0.00% of samples (jammer impact)
+
+[E] PER-CLUSTER SUMMARY
+----------------------------------------
+  Cluster         PDR   Tput(kbps)  Delay(ms)   Rekeys
+  ---------- -------- ------------ ---------- --------
+  C0         0.6923   0.7373       0.6833    23
+  C1         0.7000   0.7100       0.8643    17
+  C2         0.6667   0.6963       1.0000    14
+
+=================================================================

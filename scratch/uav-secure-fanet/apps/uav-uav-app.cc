@@ -519,6 +519,7 @@ void UavApplication::ProcessMtkPacket(
         // Decrypt MT_K using slave key  (UNCHANGED)
         bool ok = DecryptMtk(pkt.GetBody().mtk,
                               pkt.GetBody().n_group);
+        if (ok && m_skdc_app) { m_skdc_app->OnUavRekeyAck(m_uav_id, pkt.GetBody().version); }
 
         // PATCH: debug log after successful MTK processing
         NS_LOG_UNCOND("[UAV_MTK_RX] PROCESSED t="
@@ -569,9 +570,9 @@ void UavApplication::ProcessRekeyPacket(
             << " reason="
             << RekeyReasonToString(
                    pkt.GetBody().reason));
-
         DecryptMtk(pkt.GetBody().mtk,
                    crypto::BigInt(0));
+        std::cerr << "[ACK_DEBUG] UAV=" << m_uav_id << " skdc_set=" << (m_skdc_app != nullptr) << " ver=" << pkt.GetBody().version << std::endl; if (m_skdc_app) { m_skdc_app->OnUavRekeyAck(m_uav_id, pkt.GetBody().version); }
 
     } catch (const std::exception& ex) {
         UAV_LOG_WARN(uav::log::channels::CRYPTO,

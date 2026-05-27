@@ -16,6 +16,7 @@
 #include <openssl/sha.h>
 #include <iostream>
 #include <iomanip>
+#include <chrono>
 
 NS_LOG_COMPONENT_DEFINE("UavRekeyManager");
 
@@ -85,8 +86,8 @@ bool RekeyManager::TriggerRekey(
 {
     if (cluster_id >= 3) return false;
 
-    double t_start =
-        Simulator::Now().GetSeconds() * 1000.0;
+    // FIXED: use wall clock for crypto timing
+    auto _wc_start = std::chrono::steady_clock::now();
 
     RekeyEvent ev;
     ev.cluster_id  = cluster_id;
@@ -123,9 +124,8 @@ bool RekeyManager::TriggerRekey(
             cluster_id, new_tek, new_ver, skdc);
 
     ev.success = true;
-    double t_end =
-        Simulator::Now().GetSeconds() * 1000.0;
-    ev.latency_ms = t_end - t_start;
+    auto _wc_end = std::chrono::steady_clock::now();
+    ev.latency_ms = std::chrono::duration<double, std::milli>(_wc_end - _wc_start).count();
 
     m_history.push_back(ev);
     ++m_total_rekeys;

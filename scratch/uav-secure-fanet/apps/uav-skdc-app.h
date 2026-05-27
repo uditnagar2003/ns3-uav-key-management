@@ -48,6 +48,9 @@
 #include <array>
 #include <vector>
 #include <unordered_set>
+#include <map>
+#include <set>
+#include <fstream>
 
 namespace uav {
 namespace apps {
@@ -98,7 +101,7 @@ public:
         m_anim_topo     = topo;
         m_uavs_per_clus = uavs_per_cluster;
     }
-
+    void OnUavRekeyAck(utils::u32 uav_id, utils::u32 tek_version);
     /// Set NetAnim pointer for data packet visualization
 
 
@@ -185,7 +188,9 @@ private:
 
     // NetAnim pointer for data packet visualization
 
-
+    void WriteRekeyLatencyCsv(utils::u32 version, double send_time,
+                              double latency_ms, size_t expected,
+                              size_t received, const std::string& status);
     // Sequence counter
     crypto::SequenceCounter m_seq;
 
@@ -193,7 +198,8 @@ private:
     utils::u64 m_mtk_count      = 0;
     utils::u64 m_rekey_count    = 0;
     utils::u64 m_data_rx_count  = 0;
-
+     std::map<utils::u32, double>           m_rekey_send_times;
+    std::map<utils::u32, std::set<utils::u32>>   m_rekey_ack_map;
     // Internal
     void InitializeState();
     void ScheduleInitialBroadcast();

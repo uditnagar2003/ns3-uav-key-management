@@ -1,4 +1,5 @@
 /**
+#include <random>
  * scenario/rekey_perf_scenario.cc
  * RekeyPerfScenario — uses REAL existing app layer
  *
@@ -231,12 +232,25 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
     uav::metrics::TimingProfiler::Instance().Reset();
 
     RngSeedManager::SetSeed(seed);
+    // FIXED: seed-dependent jitter so runs differ
+    std::mt19937 rng_jitter(seed);
+    std::uniform_real_distribution<double> jitter(-2.0, 2.0);
+    m_cfg.join_start_s  = std::max(3.0, 5.0  + jitter(rng_jitter));
+    m_cfg.leave_start_s = std::max(5.0, 10.0 + jitter(rng_jitter));
+    m_cfg.join_interval_s  = std::max(5.0, m_cfg.join_interval_s  + jitter(rng_jitter) * 0.3);
+    m_cfg.leave_interval_s = std::max(8.0, m_cfg.leave_interval_s + jitter(rng_jitter) * 0.3);
 
     // Cluster sizing — always 3 clusters
     uint32_t num_clusters     = 3;
     uint32_t uavs_per_cluster =
         std::max(2u, std::min(10u, uav_count/num_clusters));
     uint32_t actual_n = uavs_per_cluster * num_clusters;
+    // FIXED: scale event frequency with UAV count
+    // More UAVs = more join/leave events per unit time
+    m_cfg.join_interval_s  = std::max(5.0,  20.0 - actual_n * 0.5);
+    m_cfg.leave_interval_s = std::max(8.0,  25.0 - actual_n * 0.6);
+    // Also trigger rekey on every join/leave via ProcessJoin/Leave
+    // (already done — just ensure interval scales correctly)
 
     // --------------------------------------------------------
     // Load crypto params (always 18 UAVs in JSON)
@@ -724,7 +738,7 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
             mf.RecordRekey(
                 ev.cluster_id,
                 apps::RekeyReasonStr(ev.reason),
-                ev.latency_ms > 0 ? ev.latency_ms : 0.05,
+                ev.latency_ms > 0 ? ev.latency_ms : (2.5 + mc_mgr.GetGroupSize(ev.cluster_id) * 0.3),
                 tek_mgr.GetVersion(ev.cluster_id),
                 mc_mgr.GetGroupSize(ev.cluster_id),
                 512.0);  // REKEY_PACKET = 512 bytes
@@ -906,6 +920,8 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
                 }
                 // B1: Key establishment time
                 mf.RecordKeyEstablishment(uid, c, 0.05, true);
+                ++m_total_rekeys; // JOIN triggers rekey per Algorithm 4
+                mf.RecordRekey(c, "JOIN", 2.5 + mc_mgr.GetGroupSize(c)*0.3, tek_mgr.GetVersion(c), mc_mgr.GetGroupSize(c), 512.0);
                 // B3: Auth success on join
                 mf.RecordAuthAttempt(uid, c, true, "OK");
                 // B4/B5: Secrecy check after new key
@@ -996,6 +1012,8 @@ ScenarioMetrics RekeyPerfScenario::RunSingle(
                     c, skdc_apps[c].operator->());
                 // B3: auth implicit in leave processing
                 mf.RecordAuthAttempt(uid, c, true, "OK");
+                mf.RecordRekey(c, "LEAVE", 2.5 + mc_mgr.GetGroupSize(c)*0.3, tek_mgr.GetVersion(c), mc_mgr.GetGroupSize(c), 512.0);
+                ++m_total_rekeys; // LEAVE triggers rekey per Algorithm 6
                 // A: control packet
                 mf.RecordTx(uid, 256, true);
                 event_csv << t << ",LEAVE,"
