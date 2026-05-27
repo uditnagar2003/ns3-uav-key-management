@@ -1,8 +1,8 @@
 metric,value
 cluster_head_stability,1
-avg_route_break_freq,5.55556e-05
+avg_route_break_freq,1.85185e-05
 total_route_breaks,1
 mobility_rekey_corr,0
-swarm_survivability,0.333333
-avg_connectivity_ratio,0.0980392
+swarm_survivability,1
+avg_connectivity_ratio,1
 handover_trigger_rate,0
